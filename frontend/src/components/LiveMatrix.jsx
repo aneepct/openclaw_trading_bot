@@ -49,24 +49,32 @@ function InstrumentCell({ s }) {
   );
 }
 
-export default function LiveMatrix({ signals, totalScanned = 0 }) {
+export default function LiveMatrix({ signals, totalScanned = 0, alphaCount = 0, showAllSignals = false }) {
   const rows = signals || [];
 
   if (rows.length === 0) {
+    const message = showAllSignals 
+      ? `No BTC/ETH signals found for today/tomorrow. Scanner running...`
+      : `No alpha signals found. ${totalScanned > 0 ? `Found ${totalScanned} signals (none profitable). Try "Show all signals".` : 'Scanner running...'}`;
+      
     return (
       <div style={styles.container}>
-        <div style={styles.title}>LIVE MATRIX</div>
-        <div style={styles.empty}>No alpha signals detected. Scanner running...</div>
+        <div style={styles.title}>LIVE MATRIX {showAllSignals ? '(ALL SIGNALS)' : '(ALPHA ONLY)'}</div>
+        <div style={styles.empty}>{message}</div>
       </div>
     );
   }
 
+  const title = showAllSignals 
+    ? `LIVE MATRIX — ${rows.length} SIGNAL${rows.length !== 1 ? 'S' : ''} (${alphaCount} ALPHA)`
+    : `LIVE MATRIX — ${rows.length} ALPHA SIGNAL${rows.length !== 1 ? 'S' : ''}`;
+
   return (
     <div style={styles.container}>
       <div style={styles.title}>
-        LIVE MATRIX — {rows.length} ALPHA SIGNAL{rows.length !== 1 ? 'S' : ''}
+        {title}
         <span style={{ color: '#475569', fontSize: '0.75rem', marginLeft: '1rem' }}>
-          ({totalScanned} total scanned)
+          ({totalScanned} total scanned today/tomorrow)
         </span>
       </div>
       <table style={styles.table}>
@@ -84,38 +92,51 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((s, i) => (
-            <tr key={i} style={{ background: i % 2 === 0 ? '#0f172a' : '#0a0e1a' }}>
-              <td style={styles.td}><InstrumentCell s={s} /></td>
-              <td style={{ ...styles.td, ...styles.prob }}>
-                {s.sigma_interp != null ? (Number(s.sigma_interp) * 100).toFixed(1) + '%' : '—'}
-              </td>
-              <td style={styles.td}>
-                {s.t_poly_days != null ? `${Number(s.t_poly_days).toFixed(1)}d` : '—'}
-              </td>
-              <td style={{ ...styles.td, ...styles.prob }}>
-                {s.deribit_prob != null ? `${(Number(s.deribit_prob) * 100).toFixed(2)}%` : '—'}
-              </td>
-              <td style={styles.td}>
-                {s.polymarket_price != null ? `${(Number(s.polymarket_price) * 100).toFixed(1)}¢` : '—'}
-              </td>
-              <td style={{ ...styles.td, ...((s.edge_pct ?? 0) >= 0 ? styles.edgePos : styles.edgeNeg) }}>
-                {s.edge_pct != null ? `${Number(s.edge_pct).toFixed(1)}%` : '—'}
-              </td>
-              <td style={styles.td}>
-                <span style={s.direction === 'BUY' ? styles.buy : styles.sell}>
-                  {s.direction === 'BUY' ? 'BUY YES' : 'SELL YES'}
-                </span>
-              </td>
-              <td style={{ ...styles.td, ...styles.payout }}>
-                {s.payout_ratio ? `${s.payout_ratio}x` : '—'}
-              </td>
-              <td style={styles.td}>
-                <div style={{ color: '#e2e8f0', fontSize: '0.75rem' }}>{s.polymarket_question}</div>
-                <div style={styles.reasoning}>{s.reasoning?.split('\n')[3]}</div>
-              </td>
-            </tr>
-          ))}
+          {rows.map((s, i) => {
+            const isAlpha = s.has_alpha;
+            const rowStyle = {
+              background: i % 2 === 0 ? '#0f172a' : '#0a0e1a',
+              ...(showAllSignals && !isAlpha ? { opacity: 0.6 } : {})
+            };
+            
+            return (
+              <tr key={i} style={rowStyle}>
+                <td style={styles.td}>
+                  <InstrumentCell s={s} />
+                  {showAllSignals && !isAlpha && (
+                    <div style={{ fontSize: '0.6rem', color: '#ef4444', marginTop: '2px' }}>NO ALPHA</div>
+                  )}
+                </td>
+                <td style={{ ...styles.td, ...styles.prob }}>
+                  {s.sigma_interp != null ? (Number(s.sigma_interp) * 100).toFixed(1) + '%' : '—'}
+                </td>
+                <td style={styles.td}>
+                  {s.t_poly_days != null ? `${Number(s.t_poly_days).toFixed(1)}d` : '—'}
+                </td>
+                <td style={{ ...styles.td, ...styles.prob }}>
+                  {s.deribit_prob != null ? `${(Number(s.deribit_prob) * 100).toFixed(2)}%` : '—'}
+                </td>
+                <td style={styles.td}>
+                  {s.polymarket_price != null ? `${(Number(s.polymarket_price) * 100).toFixed(1)}¢` : '—'}
+                </td>
+                <td style={{ ...styles.td, ...((s.edge_pct ?? 0) >= 0 ? styles.edgePos : styles.edgeNeg) }}>
+                  {s.edge_pct != null ? `${Number(s.edge_pct).toFixed(1)}%` : '—'}
+                </td>
+                <td style={styles.td}>
+                  <span style={s.direction === 'BUY' ? styles.buy : styles.sell}>
+                    {s.direction === 'BUY' ? 'BUY YES' : 'SELL YES'}
+                  </span>
+                </td>
+                <td style={{ ...styles.td, ...styles.payout }}>
+                  {s.payout_ratio ? `${s.payout_ratio}x` : '—'}
+                </td>
+                <td style={styles.td}>
+                  <div style={{ color: '#e2e8f0', fontSize: '0.75rem' }}>{s.polymarket_question}</div>
+                  <div style={styles.reasoning}>{s.reasoning?.split('\n')[3]}</div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

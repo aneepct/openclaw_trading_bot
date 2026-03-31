@@ -85,22 +85,57 @@ async def spec_meta():
 
 
 @app.get("/matrix")
-async def get_matrix():
+async def get_matrix(show_all: bool = False):
     """
-    Returns the latest live matrix of alpha signals.
-    These are signals where |edge| >= 3%.
+    Returns the latest live matrix of signals.
+    - show_all=False (default): Only alpha signals where |edge| >= 3%
+    - show_all=True: All signals including losing ones  
     """
     try:
-        signals = [s for s in get_latest_signals() if s.get("has_alpha")]
+        all_signals = get_latest_signals()
+        
+        if show_all:
+            signals = all_signals
+        else:
+            signals = [s for s in all_signals if s.get("has_alpha")]
+            
         signals.sort(key=lambda s: float(s.get("abs_edge_pct") or 0.0), reverse=True)
+        
         return {
             "signals": signals,
             "total": len(signals),
+            "total_scanned": len(all_signals),
+            "alpha_count": len([s for s in all_signals if s.get("has_alpha")]),
+            "show_all": show_all,
             "scanned_at": datetime.utcnow().isoformat(),
         }
     except Exception as e:
-        logger.exception("Error in /matrix")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "error": str(e), 
+            "signals": [], 
+            "total": 0,
+            "total_scanned": 0,
+            "alpha_count": 0
+        }
+
+@app.get("/debug/all-signals")
+async def get_all_signals():
+    """
+    DEBUG: Returns ALL latest signals (alpha + non-alpha) for troubleshooting.
+    """
+    try:
+        all_signals = get_latest_signals()
+        alpha_signals = [s for s in all_signals if s.get("has_alpha")]
+        
+        return {
+            "all_signals": all_signals,
+            "alpha_signals": alpha_signals,
+            "total_signals": len(all_signals),
+            "alpha_count": len(alpha_signals),
+            "scanned_at": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        return {"error": str(e), "all_signals": [], "total_signals": 0}        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/leaderboard")

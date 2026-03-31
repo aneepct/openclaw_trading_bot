@@ -30,6 +30,8 @@ export default function App() {
   const [signals, setSignals] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
   const [totalScanned, setTotalScanned] = useState(0);
+  const [alphaCount, setAlphaCount] = useState(0);
+  const [showAllSignals, setShowAllSignals] = useState(false);
   const [lastScan, setLastScan] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -39,7 +41,7 @@ export default function App() {
     setError(null);
     try {
       const [matrixRes, lbRes] = await Promise.all([
-        fetch(`${API}/matrix`),
+        fetch(`${API}/matrix?show_all=${showAllSignals}`),
         fetch(`${API}/leaderboard`),
       ]);
       if (!matrixRes.ok) throw new Error(`Backend error: ${matrixRes.status}`);
@@ -49,14 +51,15 @@ export default function App() {
       const health = healthRes.ok ? await healthRes.json() : {};
       setSignals(matrix.signals || []);
       setLeaderboard(lb.entries || []);
-      setTotalScanned(health.latest_signals || 0);
+      setTotalScanned(matrix.total_scanned || 0);
+      setAlphaCount(matrix.alpha_count || 0);
       setLastScan(new Date().toLocaleTimeString());
     } catch (e) {
       setError(`Cannot reach backend at ${API}. (${e.message})`);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showAllSignals]);
 
   useEffect(() => {
     fetchData();
@@ -104,6 +107,17 @@ export default function App() {
           ))}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          {tab === 'MATRIX' && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#94a3b8', fontSize: '0.75rem', cursor: 'pointer' }}>
+              <input 
+                type="checkbox" 
+                checked={showAllSignals} 
+                onChange={(e) => setShowAllSignals(e.target.checked)}
+                style={{ margin: 0 }}
+              />
+              Show all signals ({totalScanned}, {alphaCount} alpha)
+            </label>
+          )}
           {lastScan && <span style={styles.lastScan}>Last scan: {lastScan}</span>}
           <button style={styles.refreshBtn} onClick={fetchData} disabled={loading}>
             {loading ? 'SCANNING...' : '↺ REFRESH'}
@@ -111,7 +125,7 @@ export default function App() {
         </div>
       </div>
 
-      {tab === 'MATRIX' && <LiveMatrix signals={signals} totalScanned={totalScanned} />}
+      {tab === 'MATRIX' && <LiveMatrix signals={signals} totalScanned={totalScanned} alphaCount={alphaCount} showAllSignals={showAllSignals} />}
       {tab === 'REASONING' && <ReasoningCards signals={signals} />}
       {tab === 'LEADERBOARD' && <Leaderboard entries={leaderboard} />}
     </div>
