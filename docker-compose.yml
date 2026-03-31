@@ -35,7 +35,7 @@ services:
     container_name: trading_frontend
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "3006:80"
     depends_on:
       backend:
         condition: service_healthy
