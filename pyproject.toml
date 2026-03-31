@@ -1,0 +1,10 @@
+# Monorepo metadata — Open Claw (Levenstein agentic trading v2.6)
+# Python package layout lives under backend/; this file names the repository.
+[project]
+name = "open-claw"
+version = "2.6.0"
+description = "Open Claw — interpolated N(d2) scanner + dashboard; OpenClaw gateway optional"
+requires-python = ">=3.12"
+
+[tool.setuptools]
+packages = []
