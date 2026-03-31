@@ -135,7 +135,7 @@ async def get_all_signals():
             "scanned_at": datetime.utcnow().isoformat(),
         }
     except Exception as e:
-        return {"error": str(e), "all_signals": [], "total_signals": 0}        raise HTTPException(status_code=500, detail=str(e))
+        return {"error": str(e), "all_signals": [], "total_signals": 0}
 
 
 @app.get("/leaderboard")
