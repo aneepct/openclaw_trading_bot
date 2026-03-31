@@ -204,6 +204,7 @@ def find_bracket_expiries(
 async def fetch_crypto_price_markets() -> list[dict]:
     """
     Fetch Polymarket BTC/ETH price-level markets.
+    Filtered to only markets resolving today or tomorrow.
     Sorted by end date ascending (nearest resolution first — per doc priority).
     """
     all_markets = []
@@ -213,12 +214,17 @@ async def fetch_crypto_price_markets() -> list[dict]:
         if len(batch) < 500:
             break
 
+    # Time bounds: today and tomorrow only
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_end = today_start + timedelta(days=2)  # end of tomorrow
+    
     results = []
     for m in all_markets:
         q  = m.get("question", "")
         ql = q.lower()
 
-        # Must mention a crypto asset
+        # Must mention a crypto asset (BTC or ETH only)
         currency = None
         for cur, keywords in CURRENCY_KEYWORDS.items():
             if any(kw in ql for kw in keywords):
@@ -238,7 +244,11 @@ async def fetch_crypto_price_markets() -> list[dict]:
             continue
 
         # Must not have already resolved
-        if end < datetime.now(timezone.utc):
+        if end < now:
+            continue
+            
+        # FILTER: Only today and tomorrow markets
+        if end >= tomorrow_end:
             continue
 
         m["_parsed_price"] = price
@@ -247,6 +257,14 @@ async def fetch_crypto_price_markets() -> list[dict]:
 
     # Nearest resolution date first (core OpenClaw priority)
     results.sort(key=lambda m: extract_end_date(m) or datetime(9999, 1, 1, tzinfo=timezone.utc))
+    
+    # Log the filtering results
+    print(f"[Scanner] Time filter: Today-Tomorrow only (until {tomorrow_end.strftime('%Y-%m-%d %H:%M UTC')})")
+    print(f"[Scanner] Found {len(results)} BTC/ETH markets resolving today/tomorrow")
+    for r in results[:3]:  # show first 3
+        end_date = extract_end_date(r)
+        print(f"  - {r['_currency']} ${r['_parsed_price']:,.0f} (ends {end_date.strftime('%Y-%m-%d') if end_date else 'Unknown'}): {r.get('question', '')[:80]}...")
+    
     return results
 
 

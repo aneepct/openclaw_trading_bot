@@ -14,6 +14,10 @@ PROJECT_SLUG = "open-claw"  # recommended git / folder name; avoids clashing wit
 # ── Assets to scan ───────────────────────────────────────────
 ASSETS = ["BTC", "ETH"]
 
+# ── Time filtering ──────────────────────────────────────────── 
+# Scanner limited to markets resolving today or tomorrow only
+MAX_DAYS_AHEAD = 1  # 0=today, 1=tomorrow
+
 # ── Edge / Alpha threshold ───────────────────────────────────
 MIN_EDGE_PCT = 3.0                # Minimum edge % to flag as alpha signal
 
