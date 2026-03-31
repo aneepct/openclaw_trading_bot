@@ -1,6 +1,4 @@
-# Trading scanner — backend (FastAPI) + frontend (React/nginx).
 services:
-
   backend:
     build:
       context: ./backend
@@ -36,6 +34,26 @@ services:
     restart: unless-stopped
     ports:
       - "3006:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  openclaw:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: trading_openclaw
+    user: "0:0"
+    restart: unless-stopped
+    ports:
+      - "18789:18789"
+    volumes:
+      - ./openclaw-home:/root/.openclaw
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENCLAW_GATEWAY_BIND=lan
+    command: >
+      sh -lc "mkdir -p /root/.openclaw/workspace &&
+      printf '%s' '{\"gateway\":{\"mode\":\"local\",\"bind\":\"lan\"},\"agents\":{\"defaults\":{\"workspace\":\"/root/.openclaw/workspace\"}}}' > /root/.openclaw/openclaw.json &&
+      openclaw gateway --port 18789 --allow-unconfigured"
     depends_on:
       backend:
         condition: service_healthy
