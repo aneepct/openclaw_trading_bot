@@ -54,9 +54,9 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
   if (rows.length === 0) {
     return (
       <div style={styles.container}>
-        <div style={styles.title}>OPENAI TRADE MATRIX</div>
+        <div style={styles.title}>AI TRADE MATRIX</div>
         <div style={styles.empty}>
-          No valid today/tomorrow Deribit matches found for OpenAI review.
+          No valid today/tomorrow Deribit matches found for AI review.
         </div>
       </div>
     );
@@ -65,7 +65,7 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
   return (
     <div style={styles.container}>
       <div style={styles.title}>
-        OPENAI TRADE MATRIX — {rows.length} OPPORTUNITY{rows.length !== 1 ? 'IES' : 'Y'}
+        AI TRADE MATRIX — {rows.length} OPPORTUNITY{rows.length !== 1 ? 'IES' : 'Y'}
         <span style={{ color: '#475569', fontSize: '0.75rem', marginLeft: '1rem' }}>
           ({totalScanned} current items)
         </span>
@@ -98,6 +98,9 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
                 <span style={s.direction === 'BUY' ? styles.buy : styles.sell}>
                   {s.recommended_action || (s.direction === 'BUY' ? 'BUY YES' : 'BUY NO')}
                 </span>
+                <div style={styles.meta}>
+                  {s.direction === 'BUY' ? 'Positive edge vs market price' : 'Negative edge vs market price'}
+                </div>
               </td>
               <td style={styles.td}>
                 <ProviderDecision

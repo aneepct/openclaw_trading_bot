@@ -7,16 +7,8 @@ const styles = {
   row: { display: 'flex', alignItems: 'center', background: '#0f172a', border: '1px solid #1e293b', borderRadius: '6px', padding: '0.75rem 1rem', gap: '1rem' },
   rank: { fontSize: '1.2rem', width: '2rem', textAlign: 'center' },
   info: { flex: 1 },
-  instruments: { fontFamily: 'monospace', fontSize: '0.75rem' },
-  t1: { color: '#7dd3fc', fontWeight: 700 },
-  t2: { color: '#818cf8' },
-  questionText: { color: '#64748b', fontSize: '0.68rem', marginTop: '3px' },
-  metaRow: { display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' },
-  liquidity: { color: '#64748b', fontSize: '0.7rem' },
-  confidenceHigh: { fontSize: '0.62rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', background: '#14532d', color: '#86efac' },
-  confidenceReduced: { fontSize: '0.62rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', background: '#713f12', color: '#fde68a' },
-  callBadge: { fontSize: '0.6rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', background: '#1d4ed8', color: '#bfdbfe' },
-  putBadge:  { fontSize: '0.6rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', background: '#7c2d12', color: '#fdba74' },
+  questionText: { color: '#e2e8f0', fontSize: '0.78rem', marginTop: '3px', lineHeight: 1.4 },
+  metaRow: { display: 'flex', gap: '12px', alignItems: 'center', marginTop: '6px', color: '#64748b', fontSize: '0.7rem', flexWrap: 'wrap' },
   right: { textAlign: 'right' },
   edge: { color: '#fbbf24', fontWeight: 700, fontSize: '1rem' },
   payout: { color: '#34d399', fontSize: '0.7rem', marginTop: '2px' },
@@ -26,13 +18,13 @@ const styles = {
   empty: { color: '#475569', padding: '2rem', textAlign: 'center' },
 };
 
-const RANK_ICONS = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
+const RANK_ICONS = ['1', '2', '3', '4', '5'];
 
 export default function Leaderboard({ entries }) {
   if (!entries || entries.length === 0) {
     return (
       <div style={styles.container}>
-        <div style={styles.title}>24H ALPHA LEADERBOARD</div>
+        <div style={styles.title}>TOP SIGNALS</div>
         <div style={styles.empty}>No entries yet. Leaderboard populates as signals are detected.</div>
       </div>
     );
@@ -40,45 +32,29 @@ export default function Leaderboard({ entries }) {
 
   return (
     <div style={styles.container}>
-      <div style={styles.title}>24H ALPHA LEADERBOARD — TOP {entries.length}</div>
+      <div style={styles.title}>TOP SIGNALS — {entries.length} ACTIVE</div>
       <div style={styles.list}>
         {entries.map((e, i) => {
-          const isPut = e.option_type === 'P';
-          const confidenceStyle = e.interp_confidence === 'high' ? styles.confidenceHigh : styles.confidenceReduced;
           return (
             <div key={i} style={styles.row}>
               <div style={styles.rank}>{RANK_ICONS[i] || `#${e.rank}`}</div>
-
-              {/* T1/T2 pair + option type + liquidity */}
               <div style={styles.info}>
-                <div style={styles.instruments}>
-                  <span style={styles.t1}>{e.instrument_t1 || 'N/A'}</span>
-                  <span style={styles.t2}> ↕ {e.instrument_t2 || 'N/A'}</span>
-                </div>
-                <div style={styles.metaRow}>
-                  <span style={isPut ? styles.putBadge : styles.callBadge}>
-                    {isPut ? 'PUT ↓' : 'CALL ↑'}
-                  </span>
-                  <span style={confidenceStyle}>
-                    {e.interp_confidence === 'high' ? 'Interpolated' : 'Fallback'}
-                  </span>
-                  <span style={styles.liquidity}>
-                    Liq: ${e.liquidity_usd ? e.liquidity_usd.toLocaleString() : '—'}
-                  </span>
-                </div>
                 {e.polymarket_question && (
                   <div style={styles.questionText}>{e.polymarket_question}</div>
                 )}
+                <div style={styles.metaRow}>
+                  <span>Action: {e.recommended_action || e.direction}</span>
+                  <span>Price: {e.polymarket_price != null ? `${(Number(e.polymarket_price) * 100).toFixed(1)}%` : '—'}</span>
+                  <span>Fair: {e.deribit_prob != null ? `${(Number(e.deribit_prob) * 100).toFixed(1)}%` : '—'}</span>
+                </div>
               </div>
-
-              {/* Edge + direction + payout */}
               <div style={styles.right}>
                 <div style={styles.edge}>{e.abs_edge_pct?.toFixed(1)}%</div>
                 <div style={{ ...styles.direction, ...(e.direction === 'BUY' ? styles.buy : styles.sell) }}>
-                  {e.direction}
+                  {e.recommended_action || e.direction}
                 </div>
                 <div style={styles.payout}>
-                  {e.payout_ratio ? `${e.payout_ratio}x payout` : ''}
+                  {e.payout_ratio ? `${e.payout_ratio}x upside` : ''}
                 </div>
               </div>
             </div>

@@ -1,5 +1,5 @@
 """
-Diagnostic: Polymarket + Deribit matching (run from repo root).
+Diagnostic: Polymarket + Deribit context collection (run from repo root).
   python scripts/debug_scan.py
 """
 import asyncio
@@ -20,7 +20,6 @@ from engine.scanner import (
     days_until,
     detect_option_type,
 )
-from engine.math_engine import calculate_nd2, calculate_edge
 
 
 async def main():
@@ -40,7 +39,7 @@ async def main():
     spot = await get_index_price("btc_usd")
     print(f"BTC spot: ${spot:,.2f}")
 
-    print("\n=== STEP 4: Bracket matching (T1/T2 interpolation) ===")
+    print("\n=== STEP 4: Market context matching ===")
     for m in poly:
         currency = m['_currency']
         target_price = m['_parsed_price']
@@ -73,13 +72,16 @@ async def main():
             parsed = parse_instrument(name)
             expiry_dt = expiry_str_to_datetime(parsed['expiry_str'])
             T = days_until(expiry_dt) / 365
-            prob = calculate_nd2(spot, parsed['strike'], sigma, T)
             poly_price = extract_polymarket_price(m)
-            edge = calculate_edge(prob, poly_price) if prob else None
-            if edge:
-                print(f"  {label}: IV={sigma*100:.1f}% | N(d2)={prob*100:.2f}% | Poly YES={poly_price*100:.2f}% | Edge={edge['edge_pct']:+.1f}%")
-            else:
-                print(f"  {label}: IV={sigma*100:.1f}% | could not compute edge")
+            delta = ((book or {}).get('greeks') or {}).get('delta')
+            mark_price = (book or {}).get('mark_price')
+            print(
+                f"  {label}: IV={sigma*100:.1f}% | "
+                f"delta={delta if delta is not None else 'n/a'} | "
+                f"mark={mark_price if mark_price is not None else 'n/a'} | "
+                f"Poly YES={poly_price*100:.2f}% | "
+                f"T={T*365:.1f}d"
+            )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 [project]
 name = "open-claw"
 version = "2.6.0"
-description = "Open Claw — interpolated N(d2) scanner + dashboard; OpenClaw gateway optional"
+description = "Open Claw — OpenAI-driven Deribit vs Polymarket agent dashboard; OpenClaw gateway optional"
 requires-python = ">=3.12"
 
 [tool.setuptools]

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -71,6 +72,140 @@ class AgentScanPayload(BaseModel):
     structural_insight: str = ""
     updated_summary: str = ""
     signals: list[AgentGeneratedSignal] = Field(default_factory=list)
+
+
+def _ascii_clean(value: Any) -> str:
+    text = str(value or "")
+    text = text.replace("—", "-").replace("–", "-").replace("→", "to")
+    text = text.replace("“", '"').replace("”", '"').replace("’", "'")
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _clip_text(value: Any, limit: int) -> str:
+    text = _ascii_clean(value)
+    if len(text) <= limit:
+        return text
+    clipped = text[: max(limit - 3, 0)].rstrip(" ,.;:-")
+    return f"{clipped}..." if clipped else ""
+
+
+def _normalize_action(value: Any) -> str:
+    text = _ascii_clean(value).upper()
+    if "BUY NO" in text:
+        return "BUY NO"
+    if "BUY YES" in text:
+        return "BUY YES"
+    if text == "HOLD":
+        return "HOLD"
+    if "SELL" in text or text == "NO":
+        return "BUY NO"
+    if "BUY" in text or text == "YES":
+        return "BUY YES"
+    return "HOLD"
+
+
+def _normalize_conviction(value: Any) -> str:
+    text = _ascii_clean(value).lower()
+    if "high" in text or "strong" in text:
+        return "high"
+    if "medium" in text or "moderate" in text:
+        return "medium"
+    return "low"
+
+
+def _normalize_trade_type(value: Any) -> str:
+    text = _ascii_clean(value).lower()
+    allowed = {"mispricing", "momentum", "hedge", "range", "hold"}
+    return text if text in allowed else "mispricing"
+
+
+def _derived_action_from_probs(fair_value_pct: float, market_price_pct: float | None) -> str:
+    if market_price_pct is None:
+        return "HOLD"
+    diff = fair_value_pct - market_price_pct
+    if abs(diff) < 1.0:
+        return "HOLD"
+    return "BUY YES" if diff > 0 else "BUY NO"
+
+
+def _normalize_payload_content(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = {
+        "summary": _clip_text(payload.get("summary", ""), 220),
+        "structural_insight": _clip_text(payload.get("structural_insight", ""), 120),
+        "trades": [],
+        "signal_analyses": [],
+    }
+
+    for trade in payload.get("trades", []):
+        normalized["trades"].append(
+            {
+                "market": _ascii_clean(trade.get("market", "")),
+                "action": _normalize_action(trade.get("action", "")),
+                "conviction": _normalize_conviction(trade.get("conviction", "")),
+                "edge_pct": float(trade.get("edge_pct") or 0.0),
+                "rationale": _clip_text(trade.get("rationale", ""), 120),
+            }
+        )
+
+    for signal in payload.get("signal_analyses", []):
+        fair_value_pct = float(signal.get("fair_value_pct") or 0.0)
+        fair_value_pct = max(0.0, min(100.0, fair_value_pct))
+        normalized["signal_analyses"].append(
+            {
+                "market_id": _ascii_clean(signal.get("market_id", "")),
+                "market": _ascii_clean(signal.get("market", "")),
+                "action": _normalize_action(signal.get("action", "")),
+                "fair_value_pct": fair_value_pct,
+                "bias": _clip_text(signal.get("bias", ""), 80),
+                "conviction": _normalize_conviction(signal.get("conviction", "")),
+                "trade_type": _normalize_trade_type(signal.get("trade_type", "")),
+                "rationale": _clip_text(signal.get("rationale", ""), 120),
+                "risk": _clip_text(signal.get("risk", ""), 100),
+            }
+        )
+
+    return normalized
+
+
+def _enforce_actions_from_market(
+    payload: dict[str, Any],
+    ranked: list[dict[str, Any]],
+) -> dict[str, Any]:
+    market_prices_by_id = {
+        _ascii_clean(item.get("polymarket_market_id", "")): float(item.get("polymarket_price") or 0.0) * 100
+        for item in ranked
+        if item.get("polymarket_market_id") is not None
+    }
+    market_prices_by_question = {
+        _ascii_clean(item.get("polymarket_question", "")): float(item.get("polymarket_price") or 0.0) * 100
+        for item in ranked
+        if item.get("polymarket_question")
+    }
+
+    for signal in payload.get("signal_analyses", []):
+        market_id = _ascii_clean(signal.get("market_id", ""))
+        market_name = _ascii_clean(signal.get("market", ""))
+        market_price_pct = market_prices_by_id.get(market_id)
+        if market_price_pct is None:
+            market_price_pct = market_prices_by_question.get(market_name)
+        signal["action"] = _derived_action_from_probs(
+            float(signal.get("fair_value_pct") or 0.0),
+            market_price_pct,
+        )
+
+    trade_actions_by_market = {
+        _ascii_clean(signal.get("market", "")): signal.get("action", "HOLD")
+        for signal in payload.get("signal_analyses", [])
+        if signal.get("market")
+    }
+    for trade in payload.get("trades", []):
+        market_name = _ascii_clean(trade.get("market", ""))
+        if market_name in trade_actions_by_market:
+            trade["action"] = trade_actions_by_market[market_name]
+
+    return payload
 
 
 def _default_trade(signal: dict[str, Any]) -> dict[str, Any]:
@@ -353,6 +488,7 @@ def _normalize_payload(
     *,
     trade_hints: list[dict[str, Any]],
     signal_analyses: list[dict[str, Any]],
+    ranked: list[dict[str, Any]],
     fallback_summary: str = "",
     fallback_structural_insight: str = "",
 ) -> dict[str, Any]:
@@ -374,7 +510,8 @@ def _normalize_payload(
                 "signal_analyses": signal_analyses,
             }
         )
-    return payload.model_dump()
+    normalized = _normalize_payload_content(payload.model_dump())
+    return _enforce_actions_from_market(normalized, ranked)
 
 
 def _provider_stub(
@@ -400,6 +537,7 @@ def _provider_stub(
             None,
             trade_hints=trade_hints,
             signal_analyses=signal_analyses,
+            ranked=[],
             fallback_summary=summary,
             fallback_structural_insight=structural_insight,
         ),
@@ -411,7 +549,10 @@ def _summary_prompt(ranked: list[dict[str, Any]]) -> str:
     return (
         "Summarize the Open Claw signals for the frontend. "
         "Return strict JSON with keys: summary, structural_insight, trades, signal_analyses. "
-        "`summary` should be a short paragraph. `structural_insight` should be one "
+        "Use a professional tone and plain ASCII only. "
+        "`summary` must be a short paragraph under 220 characters. `structural_insight` must be one "
+        "sentence under 120 characters. "
+        "`conviction` must be one of low, medium, high. "
         "sentence. `trades` should be an array of objects with keys: market, "
         "action, conviction, edge_pct, rationale. `signal_analyses` should be an array "
         "with one object per signal using keys: market_id, market, action, fair_value_pct, bias, conviction, "
@@ -419,7 +560,10 @@ def _summary_prompt(ranked: list[dict[str, Any]]) -> str:
         "IMPORTANT: `market_id` must be copied EXACTLY from the input market_id field. "
         "`market` must be copied EXACTLY from the input market field. "
         "`fair_value_pct` must be a numeric probability from 0 to 100 (e.g. 35.5 means 35.5%). "
-        "Keep rationale and risk under 160 characters.\n\n"
+        "`action` must be one of BUY YES, BUY NO, HOLD. "
+        "`trade_type` must be one of mispricing, momentum, hedge, range, hold. "
+        "Keep trade rationale under 120 characters, bias under 80 characters, signal rationale under 120 characters, and risk under 100 characters. "
+        "Do not use stars, arrows, emojis, or slang.\n\n"
         f"Signals JSON:\n{json.dumps([_compact_signal(s) for s in ranked], indent=2)}"
     )
 
@@ -517,6 +661,7 @@ async def _build_provider_summary(
         parsed,
         trade_hints=trade_hints,
         signal_analyses=signal_analyses,
+        ranked=ranked,
         fallback_summary=raw_text or f"{provider.upper()} returned an empty response.",
     )
 
@@ -557,7 +702,7 @@ async def build_agent_summary(signals: list[dict[str, Any]]) -> dict[str, Any]:
                 enabled=False,
                 model=config.OPENAI_MODEL if config.OPENAI_API_KEY else None,
                 status="no_signals",
-                summary="No alpha signals are available for OpenAI yet.",
+                summary="No alpha signals are available for this provider yet.",
                 trade_hints=[],
                 signal_analyses=[],
             ),
@@ -587,7 +732,7 @@ async def build_agent_summary(signals: list[dict[str, Any]]) -> dict[str, Any]:
             "schema_version": "3",
             "providers": providers,
             "preferred_provider": "openai",
-            "summary": "No alpha signals are available for the agent yet.",
+            "summary": "No alpha signals are available for AI review yet.",
             "structural_insight": "",
             "trades": [],
             "signal_analyses": [],

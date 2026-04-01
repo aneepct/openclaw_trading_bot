@@ -3,7 +3,9 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "openclaw.db"
+DB_DIR = Path("/app/data")
+DB_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DB_DIR / "openclaw.db"
 
 
 async def _migrate_signals_columns(db):
@@ -146,6 +148,13 @@ async def init_db():
                 reasoning               TEXT,
                 scanned_at              TEXT,
                 refreshed_at            TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                key                     TEXT PRIMARY KEY,
+                value                   TEXT NOT NULL,
+                updated_at              TEXT NOT NULL
             )
         """)
         await db.commit()
@@ -314,3 +323,29 @@ async def get_recent_signals(hours: int = 1) -> list[dict]:
         """, (cutoff,))
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+
+async def get_agent_memory(key: str, default: str = "") -> str:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT value FROM agent_memory WHERE key = ?",
+            (key,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else default
+
+
+async def set_agent_memory(key: str, value: str):
+    now = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO agent_memory (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (key, value, now),
+        )
+        await db.commit()

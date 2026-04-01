@@ -36,8 +36,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Open Claw — Scanner API",
     description=(
-        "Agentic trading spec v2.6: N(d₂) fair value vs Polymarket, "
-        "two-expiry Greek interpolation (Deribit), internal ticker & 24h alpha leaderboard."
+        "Open Claw v2.6: AI-driven Deribit vs Polymarket analysis, "
+        "live matrix, reasoning, and 24h alpha leaderboard."
     ),
     version=SPEC_VERSION,
     lifespan=lifespan,
@@ -71,7 +71,7 @@ async def spec_meta():
     return {
         "spec_version": SPEC_VERSION,
         "client": SPEC_CLIENT,
-        "mission": "Fair value via N(d₂) with T₁/T₂ interpolation to Polymarket resolution time",
+        "mission": "Use AI providers to analyze Deribit and Polymarket market context and rank opportunities",
         "data_sources": {
             "deribit": "public/get_order_book (+ instruments, index)",
             "polymarket": "gamma markets API",
@@ -164,7 +164,7 @@ async def get_ticker(hours: int = 1):
 async def get_agent_summary(limit: int = 5):
     """
     Returns an LLM-generated summary of the strongest current alpha signals.
-    Falls back to deterministic scanner text if the backend has no OpenAI key.
+    Falls back to deterministic scanner text if no AI provider is available.
     """
     if limit < 1 or limit > 10:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 10")
