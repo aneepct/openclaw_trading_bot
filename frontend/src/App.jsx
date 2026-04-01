@@ -38,15 +38,30 @@ export default function App() {
 
   const attachAgentAnalysis = (rawSignals, agent) => {
     if (!rawSignals?.length) return [];
-    const analyses = agent?.signal_analyses || [];
-    const byMarket = new Map(
-      analyses
-        .filter(item => item?.market)
-        .map(item => [item.market, item])
+
+    const providerMaps = Object.fromEntries(
+      Object.entries(agent?.providers || {}).map(([provider, payload]) => {
+        const analyses = payload?.signal_analyses || [];
+        return [provider, {
+          byId: new Map(analyses.filter(a => a?.market_id).map(a => [a.market_id, a])),
+          byQ:  new Map(analyses.filter(a => a?.market).map(a => [a.market, a])),
+        }];
+      })
     );
+
+    const lookup = (maps, signal) =>
+      maps?.byId?.get(signal.polymarket_market_id) ||
+      maps?.byQ?.get(signal.polymarket_question) ||
+      null;
+
     return rawSignals.map(signal => ({
       ...signal,
-      agent_analysis: byMarket.get(signal.polymarket_question) || null,
+      provider_analyses: {
+        openai:  lookup(providerMaps.openai,  signal),
+        grok:    lookup(providerMaps.grok,    signal),
+        gemini:  lookup(providerMaps.gemini,  signal),
+      },
+      agent_analysis: lookup(providerMaps.openai, signal),
     }));
   };
 
@@ -63,12 +78,11 @@ export default function App() {
       const lb = lbRes.ok ? await lbRes.json() : { entries: [] };
       const agentRes = await fetch(`${API}/agent/summary`);
       const healthRes = await fetch(`${API}/health`);
-      const health = healthRes.ok ? await healthRes.json() : {};
       const agent = agentRes.ok ? await agentRes.json() : null;
       setSignals(attachAgentAnalysis(matrix.signals || [], agent));
       setLeaderboard(lb.entries || []);
       setAgentSummary(agent);
-      setTotalScanned(health.latest_signals || 0);
+      setTotalScanned(matrix.total || 0);
       setLastScan(new Date().toLocaleTimeString());
     } catch (e) {
       setError(`Cannot reach backend at ${API}. (${e.message})`);
@@ -94,8 +108,8 @@ export default function App() {
 
       <div style={styles.header}>
         <div>
-          <div style={styles.logo}>⚡ OPEN CLAW</div>
-          <div style={styles.subtitle}>v2.6 · N(d₂) interpolated agent · Deribit ↔ Polymarket · Levenstein.net</div>
+          <div style={styles.logo}>OPEN CLAW</div>
+          <div style={styles.subtitle}>OpenAI market review workflow for Deribit and Polymarket</div>
         </div>
         <div style={styles.status}>
           <div style={{ ...styles.dot, ...(error ? styles.dotError : {}) }} />

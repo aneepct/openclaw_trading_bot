@@ -19,8 +19,7 @@ MIN_EDGE_PCT = 3.0                # Minimum edge % to flag as alpha signal
 
 # ── Asymmetric payout filter (per doc) ───────────────────────
 # "Asymmetric payout >2x" means Polymarket YES price < 0.50
-# Enforced automatically in calculate_edge() — do not change
-# PAYOUT_MIN_RATIO = 2.0  (hardcoded in math_engine.py)
+# Used by the current agent workflow as a lightweight selection hint.
 
 # ── Liquidity filter (per doc) ───────────────────────────────
 MIN_LIQUIDITY_USD = 1000.0        # Skip markets with liquidity below this (USD)
@@ -31,7 +30,8 @@ POLYMARKET_PAGES = 8              # Pages of Polymarket markets (500 each = 4000
 DERIBIT_DEPTH = 1                 # Order book depth per instrument
 
 # ── Strike tolerance ─────────────────────────────────────────
-STRIKE_TOLERANCE_PCT = 2.0        # ±% around target strike to accept a Deribit match
+STRIKE_TOLERANCE_PCT = 5.0        # ±% around target strike to accept a Deribit match
+ALLOWED_DERIBIT_EXPIRY_DAYS = 365 # Allow Deribit contracts up to 1 year out (covers all Poly market horizons)
 
 # ── Database ─────────────────────────────────────────────────
 DB_RETAIN_DAYS = 30               # Auto-delete signals older than N days
@@ -49,28 +49,37 @@ POLYMARKET_BASE_URL = "https://gamma-api.polymarket.com"
 FRONTEND_PORT = 3001
 BACKEND_PORT  = 8000
 
-# ── OpenAI agent layer ────────────────────────────────────────
 import os
+from pathlib import Path
+
+# ── OpenAI agent layer ────────────────────────────────────────
+
+
+def _read_prompt_file() -> str:
+    prompt_path = Path(__file__).parent / "prompts" / "openclaw_system_prompt.txt"
+    if not prompt_path.exists():
+        return ""
+    return prompt_path.read_text(encoding="utf-8").strip()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_BASE_URL = (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") or "https://api.openai.com/v1").rstrip("/")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini") or "gpt-5-mini"
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "low") or "low"
+GROK_API_KEY = os.getenv("GROK_API_KEY", "").strip()
+GROK_BASE_URL = (os.getenv("GROK_BASE_URL", "https://api.x.ai/v1") or "https://api.x.ai/v1").rstrip("/")
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-3-mini") or "grok-3-mini"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_BASE_URL = (
+    os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
+    or "https://generativelanguage.googleapis.com/v1beta/openai"
+).rstrip("/")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
 AGENT_TOP_N_SIGNALS = int(os.getenv("AGENT_TOP_N_SIGNALS", "5"))
 AGENT_SYSTEM_PROMPT = (
-    os.getenv(
-    "OPENCLAW_AGENT_SYSTEM_PROMPT",
-    (
-        "You are the Open Claw trading agent. Treat Deribit as the professional "
-        "probability surface and Polymarket as the retail market to compare against. "
-        "Use the provided signal data to explain where Polymarket is underpricing or "
-        "overpricing risk. Return concise trading guidance for the frontend with a "
-        "clear bias, ranked opportunities, and short reasoning grounded in the given "
-        "numbers only. Do not invent market data."
-    ),
-)
+    os.getenv("OPENCLAW_AGENT_SYSTEM_PROMPT", "").strip()
+    or _read_prompt_file()
     or (
-        "You are the Open Claw trading agent. Treat Deribit as the professional "
+        "You are the trading agent. Treat Deribit as the professional "
         "probability surface and Polymarket as the retail market to compare against. "
         "Use the provided signal data to explain where Polymarket is underpricing or "
         "overpricing risk. Return concise trading guidance for the frontend with a "

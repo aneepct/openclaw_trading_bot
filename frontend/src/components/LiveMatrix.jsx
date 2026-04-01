@@ -10,55 +10,39 @@ const styles = {
   sell:    { color: '#f87171', fontWeight: 700 },
   edgePos: { color: '#4ade80', fontWeight: 700 },
   edgeNeg: { color: '#f87171', fontWeight: 700 },
-  instrument: { color: '#e2e8f0', fontFamily: 'monospace', fontSize: '0.72rem' },
-  interp:     { color: '#475569', fontSize: '0.65rem', marginTop: '2px' },
+  market: { color: '#e2e8f0', fontSize: '0.78rem', lineHeight: 1.5, fontWeight: 600 },
+  meta: { color: '#64748b', fontSize: '0.68rem', marginTop: '4px', lineHeight: 1.4 },
   prob:       { color: '#c084fc' },
-  payout:     { color: '#34d399', fontSize: '0.75rem' },
+  providerCell: { minWidth: '180px' },
+  providerAction: { fontWeight: 700, fontSize: '0.72rem' },
+  providerProb: { color: '#c084fc', fontSize: '0.82rem', fontWeight: 700, marginTop: '4px' },
+  providerText: { color: '#94a3b8', fontSize: '0.68rem', marginTop: '4px', lineHeight: 1.4 },
   reasoning:  { color: '#94a3b8', fontSize: '0.72rem', marginTop: '4px', lineHeight: 1.4 },
   empty:      { color: '#475569', padding: '2rem', textAlign: 'center' },
-  methodBadge: { fontSize: '0.6rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', marginLeft: '6px', verticalAlign: 'middle' },
-  confidenceRow: { marginTop: '6px', fontSize: '0.65rem' },
-  confidenceHigh: { color: '#4ade80' },
-  confidenceReduced: { color: '#fbbf24' },
-  confidenceUnknown: { color: '#94a3b8' },
-  callBadge:   { fontSize: '0.6rem', fontWeight: 700, padding: '1px 6px', borderRadius: '3px', background: '#1d4ed8', color: '#bfdbfe' },
-  putBadge:    { fontSize: '0.6rem', fontWeight: 700, padding: '1px 6px', borderRadius: '3px', background: '#7c2d12', color: '#fdba74' },
 };
 
-function OptionTypeBadge({ optionType }) {
-  const isPut = optionType === 'P';
-  return (
-    <span style={isPut ? styles.putBadge : styles.callBadge}>
-      {isPut ? 'PUT ↓' : 'CALL ↑'}
-    </span>
-  );
-}
+function ProviderDecision({ label, analysis, fallbackProb }) {
+  if (!analysis && fallbackProb == null) {
+    return <div style={styles.meta}>No response</div>;
+  }
 
-function InstrumentCell({ s }) {
-  const method = s.interp_method || 'T2-only';
-  const badgeColor = method === 'interpolated' ? { background: '#1e3a5f', color: '#93c5fd' }
-                   : method === 'T1-only'       ? { background: '#713f12', color: '#fde68a' }
-                                                : { background: '#1e293b', color: '#94a3b8' };
-  const confidenceStyle = s.interp_confidence === 'high'
-    ? styles.confidenceHigh
-    : s.interp_confidence === 'reduced'
-      ? styles.confidenceReduced
-      : styles.confidenceUnknown;
-  const methodLabel = method === 'interpolated'
-    ? `w=${s.interp_weight_w?.toFixed(2)}`
-    : 'single-expiry fallback';
+  const action = analysis?.action || 'No action';
+  const prob = analysis?.fair_value_pct;
+  const rationale = analysis?.rationale;
+  const actionStyle = /NO/i.test(action) || /SELL/i.test(action) ? styles.sell : styles.buy;
+
   return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
-        <OptionTypeBadge optionType={s.option_type} />
+    <div style={styles.providerCell}>
+      <div style={{ ...styles.providerAction, ...actionStyle }}>{action}</div>
+      <div style={styles.providerProb}>
+        {prob != null
+          ? `${Number(prob).toFixed(1)}%`
+          : fallbackProb != null
+            ? `${Number(fallbackProb).toFixed(1)}%`
+            : '—'}
       </div>
-      <div style={styles.instrument}>{s.instrument_t1 || 'N/A'}</div>
-      <div style={styles.instrument}>↕ {s.instrument_t2 || 'N/A'}</div>
-      <span style={{ ...styles.methodBadge, ...badgeColor }}>
-        {methodLabel}
-      </span>
-      <div style={{ ...styles.confidenceRow, ...confidenceStyle }}>
-        {s.interp_confidence === 'high' ? 'High confidence' : 'Reduced confidence'}
+      <div style={styles.providerText}>
+        {rationale ? rationale.split('\n')[0] : `${label} probability only`}
       </div>
     </div>
   );
@@ -70,8 +54,10 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
   if (rows.length === 0) {
     return (
       <div style={styles.container}>
-        <div style={styles.title}>LIVE MATRIX</div>
-        <div style={styles.empty}>No alpha signals detected. Scanner running...</div>
+        <div style={styles.title}>OPENAI TRADE MATRIX</div>
+        <div style={styles.empty}>
+          No valid today/tomorrow Deribit matches found for OpenAI review.
+        </div>
       </div>
     );
   }
@@ -79,55 +65,67 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
   return (
     <div style={styles.container}>
       <div style={styles.title}>
-        LIVE MATRIX — {rows.length} ALPHA SIGNAL{rows.length !== 1 ? 'S' : ''}
+        OPENAI TRADE MATRIX — {rows.length} OPPORTUNITY{rows.length !== 1 ? 'IES' : 'Y'}
         <span style={{ color: '#475569', fontSize: '0.75rem', marginLeft: '1rem' }}>
-          ({totalScanned} total scanned)
+          ({totalScanned} current items)
         </span>
       </div>
       <table style={styles.table}>
         <thead>
           <tr>
-            <th style={styles.th}>T1 / T2 INSTRUMENTS</th>
-            <th style={styles.th}>σ INTERP</th>
-            <th style={styles.th}>t_poly (days)</th>
-            <th style={styles.th}>PROFESSIONAL % (N(d₂))</th>
-            <th style={styles.th}>PM PRICE (¢)</th>
+            <th style={styles.th}>MARKET</th>
+            <th style={styles.th}>ACTION</th>
+            <th style={styles.th}>OPENAI PROBABILITY</th>
+            <th style={styles.th}>GROK PROBABILITY</th>
+            <th style={styles.th}>GEMINI PROBABILITY</th>
+            <th style={styles.th}>MARKET PRICE</th>
             <th style={styles.th}>EDGE</th>
-            <th style={styles.th}>REC</th>
-            <th style={styles.th}>PAYOUT</th>
-            <th style={styles.th}>MARKET / REASONING</th>
+            <th style={styles.th}>REASONING</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((s, i) => (
             <tr key={i} style={{ background: i % 2 === 0 ? '#0f172a' : '#0a0e1a' }}>
-              <td style={styles.td}><InstrumentCell s={s} /></td>
-              <td style={{ ...styles.td, ...styles.prob }}>
-                {s.sigma_interp != null ? (Number(s.sigma_interp) * 100).toFixed(1) + '%' : '—'}
+              <td style={styles.td}>
+                <div style={styles.market}>{s.polymarket_question}</div>
+                <div style={styles.meta}>
+                  {s.spot_price != null && s.strike != null
+                    ? `$${Number(s.spot_price).toLocaleString()} spot / $${Number(s.strike).toLocaleString()} strike`
+                    : ''}
+                </div>
               </td>
               <td style={styles.td}>
-                {s.t_poly_days != null ? `${Number(s.t_poly_days).toFixed(1)}d` : '—'}
-              </td>
-              <td style={{ ...styles.td, ...styles.prob }}>
-                {s.deribit_prob != null ? `${(Number(s.deribit_prob) * 100).toFixed(2)}%` : '—'}
+                <span style={s.direction === 'BUY' ? styles.buy : styles.sell}>
+                  {s.recommended_action || (s.direction === 'BUY' ? 'BUY YES' : 'BUY NO')}
+                </span>
               </td>
               <td style={styles.td}>
-                {s.polymarket_price != null ? `${(Number(s.polymarket_price) * 100).toFixed(1)}¢` : '—'}
+                <ProviderDecision
+                  label="OpenAI"
+                  analysis={s.provider_analyses?.openai}
+                  fallbackProb={s.deribit_prob != null ? Number(s.deribit_prob) * 100 : null}
+                />
+              </td>
+              <td style={styles.td}>
+                <ProviderDecision
+                  label="Grok"
+                  analysis={s.provider_analyses?.grok}
+                />
+              </td>
+              <td style={styles.td}>
+                <ProviderDecision
+                  label="Gemini"
+                  analysis={s.provider_analyses?.gemini}
+                />
+              </td>
+              <td style={styles.td}>
+                {s.polymarket_price != null ? `${(Number(s.polymarket_price) * 100).toFixed(1)}%` : '—'}
               </td>
               <td style={{ ...styles.td, ...((s.edge_pct ?? 0) >= 0 ? styles.edgePos : styles.edgeNeg) }}>
                 {s.edge_pct != null ? `${Number(s.edge_pct).toFixed(1)}%` : '—'}
               </td>
               <td style={styles.td}>
-                <span style={s.direction === 'BUY' ? styles.buy : styles.sell}>
-                  {s.direction === 'BUY' ? 'BUY YES' : 'SELL YES'}
-                </span>
-              </td>
-              <td style={{ ...styles.td, ...styles.payout }}>
-                {s.payout_ratio ? `${s.payout_ratio}x` : '—'}
-              </td>
-              <td style={styles.td}>
-                <div style={{ color: '#e2e8f0', fontSize: '0.75rem' }}>{s.polymarket_question}</div>
-                <div style={styles.reasoning}>{s.reasoning?.split('\n')[3]}</div>
+                <div style={styles.reasoning}>{(s.agent_analysis?.rationale || s.structural_insight || s.reasoning || '').split('\n')[0]}</div>
               </td>
             </tr>
           ))}
