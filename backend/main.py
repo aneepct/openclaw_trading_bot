@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
 
+from agents.openai_agent import build_agent_summary
 from db.database import init_db, get_leaderboard, get_recent_signals
 import db.database as db_module
 from engine.scanner import ticker_loop, get_latest_signals, scan_once, _scan_lock
@@ -156,6 +157,26 @@ async def get_ticker(hours: int = 1):
         }
     except Exception as e:
         logger.exception("Error in /ticker")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/agent/summary")
+async def get_agent_summary(limit: int = 5):
+    """
+    Returns an LLM-generated summary of the strongest current alpha signals.
+    Falls back to deterministic scanner text if the backend has no OpenAI key.
+    """
+    if limit < 1 or limit > 10:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 10")
+
+    try:
+        signals = [s for s in get_latest_signals() if s.get("has_alpha")]
+        signals.sort(key=lambda s: float(s.get("abs_edge_pct") or 0.0), reverse=True)
+        summary = await build_agent_summary(signals[:limit])
+        summary["signal_count"] = len(signals[:limit])
+        return summary
+    except Exception as e:
+        logger.exception("Error in /agent/summary")
         raise HTTPException(status_code=500, detail=str(e))
 
 

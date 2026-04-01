@@ -17,6 +17,10 @@ const styles = {
   reasoning:  { color: '#94a3b8', fontSize: '0.72rem', marginTop: '4px', lineHeight: 1.4 },
   empty:      { color: '#475569', padding: '2rem', textAlign: 'center' },
   methodBadge: { fontSize: '0.6rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', marginLeft: '6px', verticalAlign: 'middle' },
+  confidenceRow: { marginTop: '6px', fontSize: '0.65rem' },
+  confidenceHigh: { color: '#4ade80' },
+  confidenceReduced: { color: '#fbbf24' },
+  confidenceUnknown: { color: '#94a3b8' },
   callBadge:   { fontSize: '0.6rem', fontWeight: 700, padding: '1px 6px', borderRadius: '3px', background: '#1d4ed8', color: '#bfdbfe' },
   putBadge:    { fontSize: '0.6rem', fontWeight: 700, padding: '1px 6px', borderRadius: '3px', background: '#7c2d12', color: '#fdba74' },
 };
@@ -35,6 +39,14 @@ function InstrumentCell({ s }) {
   const badgeColor = method === 'interpolated' ? { background: '#1e3a5f', color: '#93c5fd' }
                    : method === 'T1-only'       ? { background: '#713f12', color: '#fde68a' }
                                                 : { background: '#1e293b', color: '#94a3b8' };
+  const confidenceStyle = s.interp_confidence === 'high'
+    ? styles.confidenceHigh
+    : s.interp_confidence === 'reduced'
+      ? styles.confidenceReduced
+      : styles.confidenceUnknown;
+  const methodLabel = method === 'interpolated'
+    ? `w=${s.interp_weight_w?.toFixed(2)}`
+    : 'single-expiry fallback';
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
@@ -43,8 +55,11 @@ function InstrumentCell({ s }) {
       <div style={styles.instrument}>{s.instrument_t1 || 'N/A'}</div>
       <div style={styles.instrument}>↕ {s.instrument_t2 || 'N/A'}</div>
       <span style={{ ...styles.methodBadge, ...badgeColor }}>
-        {method === 'interpolated' ? `w=${s.interp_weight_w?.toFixed(2)}` : method}
+        {methodLabel}
       </span>
+      <div style={{ ...styles.confidenceRow, ...confidenceStyle }}>
+        {s.interp_confidence === 'high' ? 'High confidence' : 'Reduced confidence'}
+      </div>
     </div>
   );
 }

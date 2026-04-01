@@ -13,6 +13,8 @@ const styles = {
   questionText: { color: '#64748b', fontSize: '0.68rem', marginTop: '3px' },
   metaRow: { display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' },
   liquidity: { color: '#64748b', fontSize: '0.7rem' },
+  confidenceHigh: { fontSize: '0.62rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', background: '#14532d', color: '#86efac' },
+  confidenceReduced: { fontSize: '0.62rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', background: '#713f12', color: '#fde68a' },
   callBadge: { fontSize: '0.6rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', background: '#1d4ed8', color: '#bfdbfe' },
   putBadge:  { fontSize: '0.6rem', fontWeight: 700, padding: '1px 5px', borderRadius: '3px', background: '#7c2d12', color: '#fdba74' },
   right: { textAlign: 'right' },
@@ -42,6 +44,7 @@ export default function Leaderboard({ entries }) {
       <div style={styles.list}>
         {entries.map((e, i) => {
           const isPut = e.option_type === 'P';
+          const confidenceStyle = e.interp_confidence === 'high' ? styles.confidenceHigh : styles.confidenceReduced;
           return (
             <div key={i} style={styles.row}>
               <div style={styles.rank}>{RANK_ICONS[i] || `#${e.rank}`}</div>
@@ -55,6 +58,9 @@ export default function Leaderboard({ entries }) {
                 <div style={styles.metaRow}>
                   <span style={isPut ? styles.putBadge : styles.callBadge}>
                     {isPut ? 'PUT ↓' : 'CALL ↑'}
+                  </span>
+                  <span style={confidenceStyle}>
+                    {e.interp_confidence === 'high' ? 'Interpolated' : 'Fallback'}
                   </span>
                   <span style={styles.liquidity}>
                     Liq: ${e.liquidity_usd ? e.liquidity_usd.toLocaleString() : '—'}

@@ -55,6 +55,13 @@ def run():
         else:
             print("OK /leaderboard entries=", len(r.json().get("entries") or []))
 
+        r = client.get("/agent/summary")
+        if r.status_code != 200:
+            failures.append(f"/agent/summary -> {r.status_code}")
+        else:
+            body = r.json()
+            print("OK /agent/summary enabled=", body.get("enabled"), "source=", body.get("source"))
+
     if failures:
         print("FAIL:", failures)
         sys.exit(1)

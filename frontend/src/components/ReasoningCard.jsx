@@ -26,8 +26,15 @@ const styles = {
   interpRow: { display: 'flex', gap: '1rem', marginBottom: '0.5rem', fontSize: '0.7rem', color: '#475569' },
   interpLabel: { color: '#334155' },
   interpValue: { color: '#64748b' },
+  interpNotice: { marginBottom: '0.75rem', fontSize: '0.72rem', padding: '0.5rem 0.75rem', borderRadius: '6px' },
+  interpNoticeHigh: { background: '#052e16', color: '#86efac', border: '1px solid #166534' },
+  interpNoticeReduced: { background: '#451a03', color: '#fcd34d', border: '1px solid #92400e' },
   reasoning: { color: '#64748b', fontSize: '0.72rem', lineHeight: 1.5, borderTop: '1px solid #1e293b', paddingTop: '0.5rem', whiteSpace: 'pre-line' },
   reasoningFull: { color: '#94a3b8' },
+  agentBox: { marginTop: '0.75rem', background: '#020617', border: '1px solid #1e293b', borderRadius: '6px', padding: '0.75rem' },
+  agentTitle: { color: '#7dd3fc', fontSize: '0.68rem', fontWeight: 700, letterSpacing: '0.06em', marginBottom: '0.35rem' },
+  agentMeta: { color: '#38bdf8', fontSize: '0.7rem', marginBottom: '0.35rem' },
+  agentText: { color: '#94a3b8', fontSize: '0.72rem', lineHeight: 1.5 },
   empty: { color: '#475569', padding: '2rem', textAlign: 'center' },
 };
 
@@ -35,6 +42,10 @@ function SignalCard({ signal: s }) {
   const [expanded, setExpanded] = useState(false);
   const isBuy = s.direction === 'BUY';
   const isPut = s.option_type === 'P';
+  const noticeStyle = s.interp_confidence === 'high' ? styles.interpNoticeHigh : styles.interpNoticeReduced;
+  const noticeText = s.interp_note || (s.interp_confidence === 'high'
+    ? 'Two-expiry interpolation available.'
+    : 'Single-expiry fallback used.');
 
   return (
     <div style={styles.card} onClick={() => setExpanded(e => !e)}>
@@ -59,6 +70,10 @@ function SignalCard({ signal: s }) {
 
       {/* Polymarket question */}
       <div style={styles.question}>{s.polymarket_question}</div>
+
+      <div style={{ ...styles.interpNotice, ...noticeStyle }}>
+        {noticeText}
+      </div>
 
       {/* Interpolation info */}
       <div style={styles.interpRow}>
@@ -103,6 +118,20 @@ function SignalCard({ signal: s }) {
         {expanded ? s.reasoning : s.reasoning?.split('\n').slice(2).join(' ')}
         {!expanded && <span style={{ color: '#334155' }}> [click to expand]</span>}
       </div>
+
+      {s.agent_analysis && (
+        <div style={styles.agentBox}>
+          <div style={styles.agentTitle}>AGENT TAKE</div>
+          <div style={styles.agentMeta}>
+            {s.agent_analysis.action}
+            {s.agent_analysis.bias ? ` · ${s.agent_analysis.bias}` : ''}
+            {s.agent_analysis.conviction ? ` · ${s.agent_analysis.conviction}` : ''}
+            {s.agent_analysis.trade_type ? ` · ${s.agent_analysis.trade_type}` : ''}
+          </div>
+          {s.agent_analysis.rationale && <div style={styles.agentText}>{s.agent_analysis.rationale}</div>}
+          {s.agent_analysis.risk && <div style={{ ...styles.agentText, marginTop: '0.35rem', color: '#64748b' }}>Risk: {s.agent_analysis.risk}</div>}
+        </div>
+      )}
     </div>
   );
 }

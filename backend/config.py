@@ -48,3 +48,33 @@ POLYMARKET_BASE_URL = "https://gamma-api.polymarket.com"
 # ── Ports (local dev only — Docker uses its own port mapping) ─
 FRONTEND_PORT = 3001
 BACKEND_PORT  = 8000
+
+# ── OpenAI agent layer ────────────────────────────────────────
+import os
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_BASE_URL = (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") or "https://api.openai.com/v1").rstrip("/")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini") or "gpt-5-mini"
+OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "low") or "low"
+AGENT_TOP_N_SIGNALS = int(os.getenv("AGENT_TOP_N_SIGNALS", "5"))
+AGENT_SYSTEM_PROMPT = (
+    os.getenv(
+    "OPENCLAW_AGENT_SYSTEM_PROMPT",
+    (
+        "You are the Open Claw trading agent. Treat Deribit as the professional "
+        "probability surface and Polymarket as the retail market to compare against. "
+        "Use the provided signal data to explain where Polymarket is underpricing or "
+        "overpricing risk. Return concise trading guidance for the frontend with a "
+        "clear bias, ranked opportunities, and short reasoning grounded in the given "
+        "numbers only. Do not invent market data."
+    ),
+)
+    or (
+        "You are the Open Claw trading agent. Treat Deribit as the professional "
+        "probability surface and Polymarket as the retail market to compare against. "
+        "Use the provided signal data to explain where Polymarket is underpricing or "
+        "overpricing risk. Return concise trading guidance for the frontend with a "
+        "clear bias, ranked opportunities, and short reasoning grounded in the given "
+        "numbers only. Do not invent market data."
+    )
+)

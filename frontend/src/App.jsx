@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import LiveMatrix from './components/LiveMatrix';
+import AgentSummary from './components/AgentSummary';
 import ReasoningCards from './components/ReasoningCard';
 import Leaderboard from './components/Leaderboard';
 
@@ -29,10 +30,25 @@ export default function App() {
   const [tab, setTab] = useState('MATRIX');
   const [signals, setSignals] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
+  const [agentSummary, setAgentSummary] = useState(null);
   const [totalScanned, setTotalScanned] = useState(0);
   const [lastScan, setLastScan] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  const attachAgentAnalysis = (rawSignals, agent) => {
+    if (!rawSignals?.length) return [];
+    const analyses = agent?.signal_analyses || [];
+    const byMarket = new Map(
+      analyses
+        .filter(item => item?.market)
+        .map(item => [item.market, item])
+    );
+    return rawSignals.map(signal => ({
+      ...signal,
+      agent_analysis: byMarket.get(signal.polymarket_question) || null,
+    }));
+  };
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -45,10 +61,13 @@ export default function App() {
       if (!matrixRes.ok) throw new Error(`Backend error: ${matrixRes.status}`);
       const matrix = await matrixRes.json();
       const lb = lbRes.ok ? await lbRes.json() : { entries: [] };
+      const agentRes = await fetch(`${API}/agent/summary`);
       const healthRes = await fetch(`${API}/health`);
       const health = healthRes.ok ? await healthRes.json() : {};
-      setSignals(matrix.signals || []);
+      const agent = agentRes.ok ? await agentRes.json() : null;
+      setSignals(attachAgentAnalysis(matrix.signals || [], agent));
       setLeaderboard(lb.entries || []);
+      setAgentSummary(agent);
       setTotalScanned(health.latest_signals || 0);
       setLastScan(new Date().toLocaleTimeString());
     } catch (e) {
@@ -112,7 +131,12 @@ export default function App() {
       </div>
 
       {tab === 'MATRIX' && <LiveMatrix signals={signals} totalScanned={totalScanned} />}
-      {tab === 'REASONING' && <ReasoningCards signals={signals} />}
+      {tab === 'REASONING' && (
+        <>
+          <AgentSummary agentSummary={agentSummary} />
+          <ReasoningCards signals={signals} />
+        </>
+      )}
       {tab === 'LEADERBOARD' && <Leaderboard entries={leaderboard} />}
     </div>
   );

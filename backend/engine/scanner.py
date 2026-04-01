@@ -148,6 +148,26 @@ def extract_liquidity(market: dict) -> float:
     return 0.0
 
 
+def interpolation_confidence(method: str) -> tuple[str, int, str]:
+    if method == "interpolated":
+        return (
+            "high",
+            2,
+            "Two-expiry interpolation available. Highest confidence signal.",
+        )
+    if method in {"T1-only", "T2-only"}:
+        return (
+            "reduced",
+            1,
+            "Single-expiry fallback because no full bracket was available.",
+        )
+    return (
+        "unknown",
+        0,
+        "Interpolation confidence could not be determined.",
+    )
+
+
 # ── Core: find bracket expiries T1 and T2 ────────────────────────────────────
 
 def find_bracket_expiries(
@@ -360,6 +380,8 @@ async def scan_once() -> list[dict]:
             w = 0.0
             method = "T1-only"
 
+        confidence_label, confidence_rank, confidence_note = interpolation_confidence(method)
+
         # ── Interpolate Greeks ────────────────────────────────────────────
         greeks1 = (book1 or {}).get("greeks") or {}
         greeks2 = (book2 or {}).get("greeks") or {}
@@ -429,6 +451,9 @@ async def scan_once() -> list[dict]:
             "option_type":           option_type,   # C or P (per spec keyword detection)
             "interp_method":         method,
             "interp_weight_w":       round(w, 4),
+            "interp_confidence":     confidence_label,
+            "interp_confidence_rank": confidence_rank,
+            "interp_note":           confidence_note,
             "polymarket_market_id":  poly.get("id") or poly.get("conditionId", ""),
             "polymarket_question":   poly.get("question", ""),
             # Prices
@@ -482,7 +507,13 @@ async def scan_once() -> list[dict]:
                 reasons.append(f"payout {edge['payout_ratio']}x < 2x")
             print(f"[No alpha] {t1_name}<->{t2_name} | {', '.join(reasons)}")
 
-    signals.sort(key=lambda x: x["abs_edge_pct"], reverse=True)
+    signals.sort(
+        key=lambda x: (
+            int(x.get("interp_confidence_rank") or 0),
+            float(x.get("abs_edge_pct") or 0.0),
+        ),
+        reverse=True,
+    )
     return signals
 
 
