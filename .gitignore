@@ -13,8 +13,7 @@ env/
 .env
 openclaw-home/
 
-# Database (never commit production data)
-backend/db/openclaw.db
+# Local DB files if reintroduced
 *.db
 *.sqlite3
 
@@ -40,3 +39,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Exported CSV/JSON artifacts (do not commit snapshots)
+backend/**/deribit_orderbook_data/output/
+backend/**/polymarket_event_csv/output/
+backend/**/polymarket_markets_export/output/

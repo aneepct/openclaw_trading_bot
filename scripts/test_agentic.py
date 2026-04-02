@@ -13,6 +13,7 @@ BACKEND = ROOT / "backend"
 sys.path.insert(0, str(BACKEND))
 
 import engine.scanner as scanner_mod
+import csv_refresh as csv_refresh_mod
 
 
 async def _noop_ticker():
@@ -20,6 +21,13 @@ async def _noop_ticker():
 
 
 scanner_mod.ticker_loop = _noop_ticker
+
+
+async def _noop_csv_refresh(*, cfg=None):
+    await asyncio.sleep(0.01)
+
+
+csv_refresh_mod.csv_refresh_loop = _noop_csv_refresh
 
 import main as app_main  # noqa: E402
 

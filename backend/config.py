@@ -25,7 +25,8 @@ MIN_EDGE_PCT = 3.0                # Minimum edge % to flag as alpha signal
 MIN_LIQUIDITY_USD = 1000.0        # Skip markets with liquidity below this (USD)
 
 # ── Scanner ──────────────────────────────────────────────────
-SCAN_INTERVAL_SECONDS = 60        # How often the scanner runs (seconds)
+SCAN_INTERVAL_SECONDS = 120       # How often the scanner runs (seconds)
+CSV_REFRESH_INTERVAL_SECONDS = 120  # How often to refresh CSV snapshots (seconds)
 POLYMARKET_PAGES = 8              # Pages of Polymarket markets (500 each = 4000 total)
 DERIBIT_DEPTH = 1                 # Order book depth per instrument
 

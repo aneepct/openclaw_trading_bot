@@ -8,7 +8,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 import config
-from db.database import get_agent_memory, set_agent_memory
+from memory_store import get_agent_memory, set_agent_memory
 
 
 class AgentTrade(BaseModel):

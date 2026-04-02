@@ -13,8 +13,8 @@ from typing import Optional
 from agents.openai_agent import build_agent_signals
 from clients.deribit import get_index_price, get_instruments, get_order_book
 from clients.polymarket import get_markets
-from db.database import cleanup_old_signals, save_signal
-import db.database as db_module
+import memory_store as db_module
+from memory_store import cleanup_old_signals, save_signal
 import config
 
 _latest_signals: list[dict] = []
@@ -386,7 +386,7 @@ async def scan_once() -> list[dict]:
 
 async def ticker_loop():
     global _latest_signals
-    from db.database import init_db
+    from memory_store import init_db
 
     await init_db()
     scan_count = 0
