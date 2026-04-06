@@ -71,7 +71,7 @@ export default function App() {
     }));
   };
 
-  /** Load current data from the API (GET only — used on interval and after a full scan). */
+  /** Load matrix + leaderboard only — called every 30s. Does NOT call AI providers. */
   const loadFromApi = useCallback(async () => {
     setError(null);
     try {
@@ -82,13 +82,9 @@ export default function App() {
       if (!matrixRes.ok) throw new Error(`Backend error: ${matrixRes.status}`);
       const matrix = await matrixRes.json();
       const lb = lbRes.ok ? await lbRes.json() : { entries: [] };
-      const agentRes = await fetch(`${API}/agent/summary?limit=22`);
-      await fetch(`${API}/health`);
-      const agent = agentRes.ok ? await agentRes.json() : null;
       const polyOnly = (matrix.signals || []).filter(isPolymarketMarketRow);
-      setSignals(attachAgentAnalysis(polyOnly, agent));
+      setSignals(prev => attachAgentAnalysis(polyOnly, agentSummary));
       setLeaderboard((lb.entries || []).filter(isPolymarketMarketRow));
-      setAgentSummary(agent);
       setTotalScanned(polyOnly.length);
       setLastScan(new Date().toLocaleTimeString());
     } catch (e) {
@@ -96,11 +92,11 @@ export default function App() {
     } finally {
       setInitialLoading(false);
     }
-  }, []);
+  }, [agentSummary]);
 
   /**
-   * Full refresh: live scan (Deribit + Polymarket + agent signals), CSV export snapshot, then AI summary via GET /agent/summary.
-   * Use for the REFRESH button only — not on the 30s poll (that would be too heavy).
+   * Full refresh: live scan + CSV export + AI summary from all providers.
+   * Only called when user clicks REFRESH — not on the 30s poll.
    */
   const runFullRefresh = useCallback(async () => {
     setLoading(true);
@@ -110,6 +106,10 @@ export default function App() {
       if (!scanRes.ok) throw new Error(`Scan failed: ${scanRes.status}`);
       const csvRes = await fetch(`${API}/refresh/csv`, { method: 'POST' });
       if (!csvRes.ok) throw new Error(`CSV refresh failed: ${csvRes.status}`);
+      // Call AI providers only on manual refresh
+      const agentRes = await fetch(`${API}/agent/summary?limit=22`);
+      const agent = agentRes.ok ? await agentRes.json() : null;
+      setAgentSummary(agent);
       await loadFromApi();
     } catch (e) {
       setError(`Cannot reach backend at ${API}. (${e.message})`);
