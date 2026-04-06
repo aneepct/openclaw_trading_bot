@@ -172,13 +172,13 @@ async def get_ticker(hours: int = 1):
 
 
 @app.get("/agent/summary")
-async def get_agent_summary(limit: int = 5):
+async def get_agent_summary(limit: int = 22):
     """
     Returns an LLM-generated summary of the strongest current alpha signals.
     Falls back to deterministic scanner text if no AI provider is available.
     """
-    if limit < 1 or limit > 10:
-        raise HTTPException(status_code=400, detail="limit must be between 1 and 10")
+    if limit < 1 or limit > 50:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 50")
 
     try:
         signals = [s for s in get_latest_signals() if s.get("has_alpha")]

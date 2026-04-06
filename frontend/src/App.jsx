@@ -82,7 +82,7 @@ export default function App() {
       if (!matrixRes.ok) throw new Error(`Backend error: ${matrixRes.status}`);
       const matrix = await matrixRes.json();
       const lb = lbRes.ok ? await lbRes.json() : { entries: [] };
-      const agentRes = await fetch(`${API}/agent/summary`);
+      const agentRes = await fetch(`${API}/agent/summary?limit=22`);
       await fetch(`${API}/health`);
       const agent = agentRes.ok ? await agentRes.json() : null;
       const polyOnly = (matrix.signals || []).filter(isPolymarketMarketRow);
