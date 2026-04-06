@@ -78,12 +78,11 @@ async def export_all_csvs(*, cfg: CsvRefreshConfig) -> None:
         print(f"[csv_refresh] ETH deribit export failed (rc={rc})")
         return
 
-    # Polymarket markets (today-only, unlimited pages)
+    # Polymarket markets (UTC today only by default; unlimited pages)
     rc = await _run_cmd(
         [
             py,
             str(poly_script),
-            "--only-today-utc",
             "--max-pages",
             "0",
             "--limit",

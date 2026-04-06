@@ -1,4 +1,5 @@
 import React from 'react';
+import { isPolymarketMarketRow } from '../polymarketFilters';
 
 const styles = {
   container: { marginBottom: '2rem' },
@@ -21,7 +22,8 @@ const styles = {
 const RANK_ICONS = ['1', '2', '3', '4', '5'];
 
 export default function Leaderboard({ entries }) {
-  if (!entries || entries.length === 0) {
+  const list = (entries || []).filter(isPolymarketMarketRow);
+  if (!list.length) {
     return (
       <div style={styles.container}>
         <div style={styles.title}>TOP SIGNALS</div>
@@ -32,9 +34,9 @@ export default function Leaderboard({ entries }) {
 
   return (
     <div style={styles.container}>
-      <div style={styles.title}>TOP SIGNALS — {entries.length} ACTIVE</div>
+      <div style={styles.title}>TOP SIGNALS — {list.length} ACTIVE</div>
       <div style={styles.list}>
-        {entries.map((e, i) => {
+        {list.map((e, i) => {
           return (
             <div key={i} style={styles.row}>
               <div style={styles.rank}>{RANK_ICONS[i] || `#${e.rank}`}</div>

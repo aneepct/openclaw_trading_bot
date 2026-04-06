@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { isPolymarketMarketRow } from '../polymarketFilters';
 
 const styles = {
   container: { marginBottom: '2rem' },
@@ -124,7 +125,9 @@ function SignalCard({ signal: s }) {
 }
 
 export default function ReasoningCards({ signals }) {
-  const alphaSignals = (signals || []).filter(s => s.has_alpha);
+  const alphaSignals = (signals || [])
+    .filter(isPolymarketMarketRow)
+    .filter(s => s.has_alpha);
 
   if (alphaSignals.length === 0) {
     return (

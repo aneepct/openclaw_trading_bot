@@ -12,7 +12,7 @@ from typing import Optional
 
 from agents.openai_agent import build_agent_signals
 from clients.deribit import get_index_price, get_instruments, get_order_book
-from clients.polymarket import get_markets
+from clients.polymarket import get_daily_event_markets
 import memory_store as db_module
 from memory_store import cleanup_old_signals, save_signal
 import config
@@ -212,38 +212,21 @@ def find_bracket_expiries(
 
 
 async def fetch_crypto_price_markets() -> list[dict]:
-    all_markets = []
-    for page in range(config.POLYMARKET_PAGES):
-        batch = await get_markets(limit=500, offset=page * 500, active=True)
-        all_markets.extend(batch)
-        if len(batch) < 500:
-            break
-
+    """Fetch today's daily price markets directly from Polymarket event slugs.
+    e.g. bitcoin-price-on-april-7, ethereum-price-on-april-7
+    Guarantees exactly the right daily markets (11 BTC + 11 ETH).
+    """
+    today = datetime.now(timezone.utc).date()
     results = []
-    for market in all_markets:
-        question = market.get("question", "")
-        question_lower = question.lower()
-
-        currency = None
-        for code, keywords in CURRENCY_KEYWORDS.items():
-            if any(keyword in question_lower for keyword in keywords):
-                currency = code
-                break
-        if not currency:
-            continue
-
-        target_price = extract_price_from_question(question)
-        end_date = extract_end_date(market)
-        if target_price is None or end_date is None:
-            continue
-        if end_date < datetime.now(timezone.utc):
-            continue
-
-        market["_currency"] = currency
-        market["_parsed_price"] = target_price
-        results.append(market)
-
-    results.sort(key=lambda market: extract_end_date(market) or datetime.max.replace(tzinfo=timezone.utc))
+    for currency in config.ASSETS:
+        markets = await get_daily_event_markets(currency, today)
+        for market in markets:
+            question = market.get("question", "")
+            target_price = extract_price_from_question(question)
+            if target_price is None:
+                continue
+            market["_parsed_price"] = target_price
+            results.append(market)
     return results
 
 
@@ -385,7 +368,6 @@ async def scan_once() -> list[dict]:
 
 
 async def ticker_loop():
-    global _latest_signals
     from memory_store import init_db
 
     await init_db()
@@ -398,6 +380,7 @@ async def ticker_loop():
 
             signals = await scan_once()
             async with _scan_lock:
+                global _latest_signals
                 _latest_signals = signals
 
             refresh_fn = getattr(db_module, "refresh_alpha_leaderboard_cache", None)

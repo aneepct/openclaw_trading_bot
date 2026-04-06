@@ -1,4 +1,5 @@
 import React from 'react';
+import { isPolymarketMarketRow } from '../polymarketFilters';
 
 const styles = {
   container: { marginBottom: '2rem' },
@@ -49,14 +50,14 @@ function ProviderDecision({ label, analysis, fallbackProb }) {
 }
 
 export default function LiveMatrix({ signals, totalScanned = 0 }) {
-  const rows = signals || [];
+  const rows = (signals || []).filter(isPolymarketMarketRow);
 
   if (rows.length === 0) {
     return (
       <div style={styles.container}>
         <div style={styles.title}>AI TRADE MATRIX</div>
         <div style={styles.empty}>
-          No valid today/tomorrow Deribit matches found for AI review.
+          No Polymarket markets in the current snapshot (or none passed the alpha filter).
         </div>
       </div>
     );

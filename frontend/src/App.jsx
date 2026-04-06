@@ -3,6 +3,7 @@ import LiveMatrix from './components/LiveMatrix';
 import AgentSummary from './components/AgentSummary';
 import ReasoningCards from './components/ReasoningCard';
 import Leaderboard from './components/Leaderboard';
+import { isPolymarketMarketRow } from './polymarketFilters';
 
 const API = (process.env.REACT_APP_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
@@ -22,6 +23,10 @@ const styles = {
   topBar: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' },
   lastScan: { color: '#334155', fontSize: '0.7rem' },
   error: { color: '#f87171', background: '#450a0a', padding: '1rem', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.8rem' },
+  scanOverlay: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '70vh', gap: '1.5rem' },
+  scanSpinner: { width: '48px', height: '48px', border: '3px solid #1e293b', borderTop: '3px solid #7dd3fc', borderRadius: '50%', animation: 'spin 1s linear infinite' },
+  scanText: { color: '#7dd3fc', fontSize: '1rem', letterSpacing: '0.2em', fontFamily: "'Courier New', monospace" },
+  scanSub: { color: '#475569', fontSize: '0.72rem', letterSpacing: '0.1em' },
 };
 
 const TABS = ['MATRIX', 'REASONING', 'LEADERBOARD'];
@@ -35,6 +40,7 @@ export default function App() {
   const [lastScan, setLastScan] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
 
   const attachAgentAnalysis = (rawSignals, agent) => {
     if (!rawSignals?.length) return [];
@@ -79,13 +85,16 @@ export default function App() {
       const agentRes = await fetch(`${API}/agent/summary`);
       await fetch(`${API}/health`);
       const agent = agentRes.ok ? await agentRes.json() : null;
-      setSignals(attachAgentAnalysis(matrix.signals || [], agent));
-      setLeaderboard(lb.entries || []);
+      const polyOnly = (matrix.signals || []).filter(isPolymarketMarketRow);
+      setSignals(attachAgentAnalysis(polyOnly, agent));
+      setLeaderboard((lb.entries || []).filter(isPolymarketMarketRow));
       setAgentSummary(agent);
-      setTotalScanned(matrix.total || 0);
+      setTotalScanned(polyOnly.length);
       setLastScan(new Date().toLocaleTimeString());
     } catch (e) {
       setError(`Cannot reach backend at ${API}. (${e.message})`);
+    } finally {
+      setInitialLoading(false);
     }
   }, []);
 
@@ -118,16 +127,14 @@ export default function App() {
   return (
     <div style={styles.app}>
       <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.3; }
-        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
 
       <div style={styles.header}>
         <div>
           <div style={styles.logo}>OPEN CLAW</div>
-          <div style={styles.subtitle}>OpenAI market review workflow for Deribit and Polymarket</div>
+          <div style={styles.subtitle}>Polymarket markets · AI-assisted edge vs fair value</div>
         </div>
         <div style={styles.status}>
           <div style={{ ...styles.dot, ...(error ? styles.dotError : {}) }} />
@@ -137,6 +144,14 @@ export default function App() {
 
       {error && <div style={styles.error}>{error}</div>}
 
+      {initialLoading ? (
+        <div style={styles.scanOverlay}>
+          <div style={styles.scanSpinner} />
+          <div style={styles.scanText}>SCANNING...</div>
+          <div style={styles.scanSub}>Fetching Deribit + Polymarket data</div>
+        </div>
+      ) : (
+      <>
       <div style={styles.topBar}>
         <div style={styles.tabs}>
           {TABS.map(t => (
@@ -170,6 +185,8 @@ export default function App() {
         </>
       )}
       {tab === 'LEADERBOARD' && <Leaderboard entries={leaderboard} />}
+      </>
+      )}
     </div>
   );
 }

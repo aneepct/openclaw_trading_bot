@@ -13,14 +13,21 @@ import memory_store as db_module
 from memory_store import get_leaderboard, get_recent_signals, init_db
 import engine.scanner as scanner_module
 from engine.scanner import scan_once, ticker_loop, _scan_lock
+from csv_signals import get_latest_signals as get_csv_pipeline_signals
 import config as app_config
 from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
 from csv_refresh import csv_refresh_loop, export_all_csvs, make_default_cfg
 
 
 def get_latest_signals():
-    """Live scanner cache (updated by ticker_loop and POST /scan)."""
-    return scanner_module.get_latest_signals()
+    """
+    Prefer live scanner signals (uses event-slug Polymarket fetch → exact daily markets).
+    Falls back to CSV pipeline if scanner has not completed its first run yet.
+    """
+    out = scanner_module.get_latest_signals()
+    if out:
+        return out
+    return get_csv_pipeline_signals()
 
 
 @asynccontextmanager
@@ -78,8 +85,9 @@ async def spec_meta():
         "client": SPEC_CLIENT,
         "mission": "Use AI providers to analyze Deribit and Polymarket market context and rank opportunities",
         "data_sources": {
-            "deribit": "public/get_order_book (+ instruments, index)",
-            "polymarket": "gamma markets API",
+            "deribit": "public/get_order_book (+ instruments, index); CSV snapshots for matrix",
+            "polymarket": "gamma markets API; CSV snapshot (UTC today) for matrix",
+            "live_matrix_pipeline": "Deribit + Polymarket CSV → build_agent_signals (LLM) → GET /matrix",
         },
         "ui_surfaces": {
             "live_matrix": "GET /matrix",
@@ -197,10 +205,9 @@ async def trigger_csv_refresh():
 
 @app.post("/scan")
 async def trigger_scan():
-    """Manually trigger a scan and return results immediately."""
-    signals = await scan_once()
+    """Run live Deribit + Polymarket API scan (persists to DB). Matrix uses CSV+LLM via /refresh/csv."""
     async with _scan_lock:
-        scanner_module._latest_signals = signals
+        signals = await scan_once()
     refresh_fn = getattr(db_module, "refresh_alpha_leaderboard_cache", None)
     if refresh_fn:
         await refresh_fn(

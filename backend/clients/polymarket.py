@@ -1,8 +1,40 @@
 import httpx
+from datetime import date
 from typing import Optional
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE  = "https://clob.polymarket.com"
+
+CURRENCY_SLUGS = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+}
+
+
+def build_daily_event_slug(currency: str, target_date: date) -> str:
+    """Build Polymarket event slug for daily price markets.
+    e.g. BTC on April 7 -> 'bitcoin-price-on-april-7'
+    """
+    asset = CURRENCY_SLUGS.get(currency, currency.lower())
+    month = target_date.strftime("%B").lower()  # 'april'
+    day = str(target_date.day)                  # '7' (no leading zero)
+    return f"{asset}-price-on-{month}-{day}"
+
+
+async def get_daily_event_markets(currency: str, target_date: date) -> list[dict]:
+    """Fetch all markets from the daily price event slug for a given currency and date."""
+    slug = build_daily_event_slug(currency, target_date)
+    url = f"{GAMMA_BASE}/events/slug/{slug}"
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url)
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        event = resp.json()
+        markets = event.get("markets") or []
+        for m in markets:
+            m["_currency"] = currency
+        return markets
 
 
 async def get_markets(limit: int = 100, offset: int = 0, active: bool = True) -> list[dict]:

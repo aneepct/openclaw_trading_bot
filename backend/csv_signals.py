@@ -3,12 +3,32 @@ from __future__ import annotations
 import csv
 import math
 import threading
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 import config
+
+import engine.scanner as scanner_module
+import memory_store as db_module
+from agents.openai_agent import build_agent_signals
+
+
+def _days_until(dt: datetime) -> float:
+    now = datetime.now(timezone.utc)
+    return (dt - now).total_seconds() / 86400.0
+
+
+def _book_from_der_row(r: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    if not r:
+        return None
+    return {
+        "mark_iv": r.get("mark_iv"),
+        "delta": r.get("delta"),
+        "bid_price": r.get("best_bid_price"),
+        "ask_price": r.get("best_ask_price"),
+        "mark_price": r.get("mark_price"),
+    }
 
 
 _latest_signals: list[dict[str, Any]] = []
@@ -133,7 +153,7 @@ def _compute_for_currency(
 
     # Infer T1/T2 from expiry_str in the CSV (should be uniform for each file).
     # If multiple expiries exist, we compute per-match using the row's expiry_str.
-    signals: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
 
     for m in poly_rows:
         # Required for the probability comparison
@@ -209,62 +229,81 @@ def _compute_for_currency(
         abs_edge_pct = round(abs(edge_pct), 2)
         has_alpha = abs_edge_pct >= float(config.MIN_EDGE_PCT)
 
-        direction = "BUY" if edge_pct > 0 else "SELL"
-        recommended_action = "BUY YES" if direction == "BUY" else "BUY NO"
-
         # Deribit spot proxy
         spot_price = _to_float(der1.get("index_price") if der1 else der2.get("index_price")) if (der1 or der2) else None
 
-        payout_ratio = round(1.0 / polymarket_price, 2) if polymarket_price and polymarket_price > 0 else None
         liquidity_usd = _to_float(m.get("liquidity_usd")) or 0.0
-
-        reasoning = (
-            f"Deribit={deribit_prob * 100:.2f}% interpolated vs Poly={polymarket_price * 100:.2f}%; "
-            f"edge {edge_pct:+.2f}%."
-        )
-
-        rank_label = (
-            "***" if abs_edge_pct >= 10 else "**" if abs_edge_pct >= 5 else "*" if abs_edge_pct >= 2 else "pass"
-        )
 
         instrument_t1_expiry = t1.isoformat() if t1 else None
         instrument_t2_expiry = t2.isoformat() if t2 else None
 
-        signals.append(
+        sigma_t1 = None
+        sigma_t2 = None
+        if der1:
+            mv1 = _to_float(der1.get("mark_iv"))
+            if mv1 is not None:
+                sigma_t1 = round(mv1 / 100.0, 4)
+        if der2:
+            mv2 = _to_float(der2.get("mark_iv"))
+            if mv2 is not None:
+                sigma_t2 = round(mv2 / 100.0, 4)
+        sigma_interp = round(float(sigma_t1 or sigma_t2 or 0.0), 4) if (sigma_t1 or sigma_t2) else None
+
+        primary = der1 or der2
+        candidates.append(
             {
-                "instrument_t1": der1.get("instrument_name") if der1 else None,
-                "instrument_t2": der2.get("instrument_name") if der2 else None,
+                "instrument_t1": der1.get("instrument_name") if der1 else "N/A",
+                "instrument_t2": der2.get("instrument_name") if der2 else "N/A",
                 "instrument_t1_expiry": instrument_t1_expiry,
                 "instrument_t2_expiry": instrument_t2_expiry,
-                "polymarket_market_id": m.get("market_id"),
-                "polymarket_question": m.get("polymarket_question") or "",
                 "option_type": option_type,
+                "interp_method": "interpolated" if (der1 and der2) else ("T2-only" if der2 else "T1-only"),
+                "interp_weight_w": None,
+                "interp_confidence": "high" if (der1 and der2) else "reduced",
+                "interp_confidence_rank": 2 if (der1 and der2) else 1,
+                "interp_note": (
+                    "Two live Deribit contexts available."
+                    if (der1 and der2)
+                    else "Single-context fallback used."
+                ),
+                "polymarket_market_id": str(m.get("market_id") or ""),
+                "polymarket_question": m.get("polymarket_question") or "",
+                "market_resolution_at": t_star.isoformat(),
                 "spot_price": spot_price,
                 "strike": strike,
-                "direction": direction,
-                "recommended_action": recommended_action,
-                "deribit_prob": round(deribit_prob, 4),
+                "t_poly_days": round(_days_until(t_star), 2),
+                "T1_days": round(_days_until(t1), 2) if t1 else None,
+                "T2_days": round(_days_until(t2), 2) if t2 else None,
+                "sigma_t1": sigma_t1,
+                "sigma_t2": sigma_t2,
+                "sigma_interp": sigma_interp,
+                "delta": _to_float(primary.get("delta")) if primary else None,
+                "gamma": _to_float(primary.get("gamma")) if primary else None,
+                "vega": _to_float(primary.get("vega")) if primary else None,
+                "theta": _to_float(primary.get("theta")) if primary else None,
+                "rho": _to_float(primary.get("rho")) if primary else None,
                 "polymarket_price": round(polymarket_price, 4),
+                "deribit_prob": round(deribit_prob, 4),
                 "edge_pct": edge_pct,
                 "abs_edge_pct": abs_edge_pct,
                 "has_alpha": has_alpha,
-                "payout_ratio": payout_ratio,
                 "liquidity_usd": round(liquidity_usd, 2),
-                "reasoning": reasoning,
-                "structural_insight": "",
-                "rank_label": rank_label,
-                # Fields used by some frontend calculations (ticker/leaderboard style)
-                "interp_method": "interpolated" if (der1 and der2) else ("T2-only" if der2 else "T1-only"),
+                "t1_book": _book_from_der_row(der1),
+                "t2_book": _book_from_der_row(der2),
                 "scanned_at": datetime.utcnow().isoformat(),
+                "quoted_at": datetime.utcnow().isoformat(),
+                "live_data": False,
+                "data_source": "csv_deribit_poly",
+                "currency": currency,
             }
         )
 
-    # Keep only alpha for matrix UI; caller may re-filter.
-    signals.sort(key=lambda s: float(s.get("abs_edge_pct") or 0.0), reverse=True)
-    return signals, len(poly_rows)
+    candidates.sort(key=lambda s: float(s.get("abs_edge_pct") or 0.0), reverse=True)
+    return candidates, len(poly_rows)
 
 
 async def refresh_latest_signals() -> None:
+    global _latest_signals
     # Works both locally and in Docker where backend build context copies files to /app.
     backend_root = Path(__file__).resolve().parent
     depth = getattr(config, "DERIBIT_DEPTH", 1)
@@ -314,25 +353,36 @@ async def refresh_latest_signals() -> None:
         / f"order_book_tomorrow_depth{depth}.csv"
     )
 
-    btc_signals, _btc_poly_total = _compute_for_currency(
+    btc_candidates, _btc_poly_total = _compute_for_currency(
         currency="BTC",
         poly_csv_path=btc_poly,
         deribit_today_csv_path=btc_t1,
         deribit_tomorrow_csv_path=btc_t2,
     )
-    eth_signals, _eth_poly_total = _compute_for_currency(
+    eth_candidates, _eth_poly_total = _compute_for_currency(
         currency="ETH",
         poly_csv_path=eth_poly,
         deribit_today_csv_path=eth_t1,
         deribit_tomorrow_csv_path=eth_t2,
     )
 
-    signals = [s for s in (btc_signals + eth_signals) if s.get("has_alpha")]
-    signals.sort(key=lambda s: float(s.get("abs_edge_pct") or 0.0), reverse=True)
+    candidates = btc_candidates + eth_candidates
+    if not candidates:
+        with _lock:
+            _latest_signals = []
+        scanner_module._latest_signals = []
+        return
+
+    final_signals, _meta = await build_agent_signals(candidates)
 
     with _lock:
-        global _latest_signals
-        _latest_signals = signals
+        _latest_signals = final_signals
+
+    scanner_module._latest_signals = final_signals
+
+    refresh_fn = getattr(db_module, "refresh_alpha_leaderboard_cache", None)
+    if refresh_fn:
+        await refresh_fn(hours=config.LEADERBOARD_HOURS, top_n=config.LEADERBOARD_TOP_N)
 
 
 def get_latest_signals() -> list[dict[str, Any]]:
