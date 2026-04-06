@@ -65,8 +65,8 @@ export default function App() {
     }));
   };
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  /** Load current data from the API (GET only — used on interval and after a full scan). */
+  const loadFromApi = useCallback(async () => {
     setError(null);
     try {
       const [matrixRes, lbRes] = await Promise.all([
@@ -77,7 +77,7 @@ export default function App() {
       const matrix = await matrixRes.json();
       const lb = lbRes.ok ? await lbRes.json() : { entries: [] };
       const agentRes = await fetch(`${API}/agent/summary`);
-      const healthRes = await fetch(`${API}/health`);
+      await fetch(`${API}/health`);
       const agent = agentRes.ok ? await agentRes.json() : null;
       setSignals(attachAgentAnalysis(matrix.signals || [], agent));
       setLeaderboard(lb.entries || []);
@@ -86,16 +86,34 @@ export default function App() {
       setLastScan(new Date().toLocaleTimeString());
     } catch (e) {
       setError(`Cannot reach backend at ${API}. (${e.message})`);
-    } finally {
-      setLoading(false);
     }
   }, []);
 
+  /**
+   * Full refresh: live scan (Deribit + Polymarket + agent signals), CSV export snapshot, then AI summary via GET /agent/summary.
+   * Use for the REFRESH button only — not on the 30s poll (that would be too heavy).
+   */
+  const runFullRefresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const scanRes = await fetch(`${API}/scan`, { method: 'POST' });
+      if (!scanRes.ok) throw new Error(`Scan failed: ${scanRes.status}`);
+      const csvRes = await fetch(`${API}/refresh/csv`, { method: 'POST' });
+      if (!csvRes.ok) throw new Error(`CSV refresh failed: ${csvRes.status}`);
+      await loadFromApi();
+    } catch (e) {
+      setError(`Cannot reach backend at ${API}. (${e.message})`);
+    } finally {
+      setLoading(false);
+    }
+  }, [loadFromApi]);
+
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 30000);
+    loadFromApi();
+    const interval = setInterval(loadFromApi, 30000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [loadFromApi]);
 
   return (
     <div style={styles.app}>
@@ -138,7 +156,7 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           {lastScan && <span style={styles.lastScan}>Last scan: {lastScan}</span>}
-          <button style={styles.refreshBtn} onClick={fetchData} disabled={loading}>
+          <button style={styles.refreshBtn} onClick={runFullRefresh} disabled={loading}>
             {loading ? 'SCANNING...' : '↺ REFRESH'}
           </button>
         </div>

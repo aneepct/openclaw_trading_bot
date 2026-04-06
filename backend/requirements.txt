@@ -1,4 +1,13 @@
+# --- Web stack ---
+# FastAPI: HTTP API framework used by main.py (routes, lifespan, CORS).
 fastapi==0.111.0
+# Uvicorn: ASGI server that runs the FastAPI app (also in Docker CMD).
 uvicorn[standard]==0.29.0
+
+# --- HTTP client ---
+# httpx: async client for Deribit and Polymarket public APIs (clients/*.py).
 httpx==0.27.0
+
+# --- Validation ---
+# Pydantic v2: request/response and internal models where used.
 pydantic==2.7.1

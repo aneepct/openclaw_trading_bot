@@ -25,8 +25,12 @@ MIN_EDGE_PCT = 3.0                # Minimum edge % to flag as alpha signal
 MIN_LIQUIDITY_USD = 1000.0        # Skip markets with liquidity below this (USD)
 
 # ── Scanner ──────────────────────────────────────────────────
-SCAN_INTERVAL_SECONDS = 120       # How often the scanner runs (seconds)
-CSV_REFRESH_INTERVAL_SECONDS = 120  # How often to refresh CSV snapshots (seconds)
+# Intervals in hours (e.g. 2/60 = 2 minutes, 1 = hourly). Seconds are derived for asyncio.
+SCAN_INTERVAL_HOURS = 1
+SCAN_INTERVAL_SECONDS = int(round(SCAN_INTERVAL_HOURS * 3600))
+
+CSV_REFRESH_INTERVAL_HOURS = 1
+CSV_REFRESH_INTERVAL_SECONDS = int(round(CSV_REFRESH_INTERVAL_HOURS * 3600))
 POLYMARKET_PAGES = 8              # Pages of Polymarket markets (500 each = 4000 total)
 DERIBIT_DEPTH = 1                 # Order book depth per instrument
 
@@ -36,7 +40,7 @@ ALLOWED_DERIBIT_EXPIRY_DAYS = 365 # Allow Deribit contracts up to 1 year out (co
 
 # ── Database ─────────────────────────────────────────────────
 DB_RETAIN_DAYS = 30               # Auto-delete signals older than N days
-DB_CLEANUP_EVERY_N_SCANS = 1440   # Run cleanup every N scans (1440 ≈ once/day)
+DB_CLEANUP_EVERY_N_SCANS = 24     # Run cleanup every N scans (24 ≈ once/day with hourly scans)
 
 # ── Leaderboard ──────────────────────────────────────────────
 LEADERBOARD_HOURS = 24            # Look-back window

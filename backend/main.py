@@ -11,22 +11,31 @@ logger = logging.getLogger(__name__)
 from agents.openai_agent import build_agent_summary
 import memory_store as db_module
 from memory_store import get_leaderboard, get_recent_signals, init_db
-from engine.scanner import scan_once, _scan_lock
+import engine.scanner as scanner_module
+from engine.scanner import scan_once, ticker_loop, _scan_lock
 import config as app_config
 from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
-from csv_refresh import csv_refresh_loop, make_default_cfg
-from csv_signals import get_latest_signals
+from csv_refresh import csv_refresh_loop, export_all_csvs, make_default_cfg
+
+
+def get_latest_signals():
+    """Live scanner cache (updated by ticker_loop and POST /scan)."""
+    return scanner_module.get_latest_signals()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: init in-memory store and launch CSV refresh loop
     await init_db()
     cfg = make_default_cfg()
-    task = asyncio.create_task(csv_refresh_loop(cfg=cfg))
+    csv_task = asyncio.create_task(csv_refresh_loop(cfg=cfg))
+    scanner_task = asyncio.create_task(ticker_loop())
     yield
-    # Shutdown: cancel CSV refresh loop
-    task.cancel()
+    for task in (csv_task, scanner_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -111,7 +120,7 @@ async def get_leaderboard_route(hours: int = 24, top: int = 5):
         raise HTTPException(status_code=400, detail="top must be between 1 and 20")
 
     try:
-        # CSV-derived leaderboard: we only have "current" signals, so `hours` is informational.
+        # Live scanner snapshot; `hours` is informational (no historical DB).
         signals = [s for s in get_latest_signals() if s.get("has_alpha")]
         signals.sort(key=lambda s: float(s.get("abs_edge_pct") or 0.0), reverse=True)
         ranked = []
@@ -174,12 +183,24 @@ async def get_agent_summary(limit: int = 5):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/refresh/csv")
+async def trigger_csv_refresh():
+    """Run CSV export scripts and refresh the CSV-derived snapshot (same work as the background loop)."""
+    cfg = make_default_cfg()
+    try:
+        await export_all_csvs(cfg=cfg)
+    except Exception as e:
+        logger.exception("Error in /refresh/csv")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "refreshed_at": datetime.utcnow().isoformat()}
+
+
 @app.post("/scan")
 async def trigger_scan():
     """Manually trigger a scan and return results immediately."""
     signals = await scan_once()
     async with _scan_lock:
-        _scanner._latest_signals = signals
+        scanner_module._latest_signals = signals
     refresh_fn = getattr(db_module, "refresh_alpha_leaderboard_cache", None)
     if refresh_fn:
         await refresh_fn(
