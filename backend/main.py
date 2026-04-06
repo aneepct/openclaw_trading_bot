@@ -1,7 +1,10 @@
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,7 +60,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "https://openclaw-portal.aneep.tech"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -171,24 +174,92 @@ async def get_ticker(hours: int = 1):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ---------------------------------------------------------------------------
+# Agent summary in-memory cache
+# ---------------------------------------------------------------------------
+# AI providers (OpenAI, Grok, Gemini) are rate-limited and expensive.
+# We cache the last successful response for 1 hour so repeated refreshes
+# never hit the APIs more than once per hour.
+#
+# Thread-safety: asyncio.Lock() prevents multiple concurrent requests from
+# all racing to call the providers simultaneously (stampede protection).
+# ---------------------------------------------------------------------------
+
+_SUMMARY_CACHE_TTL = 3600  # 1 hour in seconds
+
+
+@dataclass
+class _SummaryCache:
+    data: Any = None          # last successful API response
+    fetched_at: float = 0.0   # unix timestamp of last successful fetch
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # stampede guard
+
+    def is_fresh(self) -> bool:
+        """Return True if the cached value is still within the TTL window."""
+        return self.data is not None and (time.time() - self.fetched_at) < _SUMMARY_CACHE_TTL
+
+    def store(self, data: Any) -> None:
+        """Save a new response and record the fetch time."""
+        self.data = data
+        self.fetched_at = time.time()
+
+    def age_seconds(self) -> float:
+        """How many seconds ago the cache was last populated."""
+        return time.time() - self.fetched_at if self.fetched_at else float("inf")
+
+
+_summary_cache = _SummaryCache()
+
+
 @app.get("/agent/summary")
-async def get_agent_summary(limit: int = 22):
+async def get_agent_summary(limit: int = 22, force: bool = False):
     """
     Returns an LLM-generated summary of the strongest current alpha signals.
-    Falls back to deterministic scanner text if no AI provider is available.
+
+    Caching behaviour:
+    - Responses are cached for 1 hour (3600 s) in memory.
+    - Concurrent requests wait on the same lock so only ONE provider call
+      is ever in-flight at a time (stampede protection).
+    - Pass ?force=true to bypass the cache and force a fresh AI call.
+
+    Rate-limit protection:
+    - Without caching every 30-second frontend poll would call OpenAI /
+      Grok / Gemini simultaneously, exhausting free-tier quotas instantly.
+    - With this cache the providers are called at most once per hour unless
+      the user explicitly forces a refresh.
     """
     if limit < 1 or limit > 50:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 50")
 
-    try:
-        signals = [s for s in get_latest_signals() if s.get("has_alpha")]
-        signals.sort(key=lambda s: float(s.get("abs_edge_pct") or 0.0), reverse=True)
-        summary = await build_agent_summary(signals[:limit])
-        summary["signal_count"] = len(signals[:limit])
-        return summary
-    except Exception as e:
-        logger.exception("Error in /agent/summary")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Fast path: return cached data without acquiring the lock
+    if not force and _summary_cache.is_fresh():
+        cached = dict(_summary_cache.data)
+        cached["cached"] = True
+        cached["cache_age_seconds"] = int(_summary_cache.age_seconds())
+        return cached
+
+    # Slow path: one coroutine calls the providers; the rest wait and reuse
+    async with _summary_cache.lock:
+        # Re-check after acquiring the lock — another coroutine may have
+        # already populated the cache while we were waiting.
+        if not force and _summary_cache.is_fresh():
+            cached = dict(_summary_cache.data)
+            cached["cached"] = True
+            cached["cache_age_seconds"] = int(_summary_cache.age_seconds())
+            return cached
+
+        try:
+            signals = [s for s in get_latest_signals() if s.get("has_alpha")]
+            signals.sort(key=lambda s: float(s.get("abs_edge_pct") or 0.0), reverse=True)
+            summary = await build_agent_summary(signals[:limit])
+            summary["signal_count"] = len(signals[:limit])
+            summary["cached"] = False
+            summary["cache_age_seconds"] = 0
+            _summary_cache.store(summary)
+            return summary
+        except Exception as e:
+            logger.exception("Error in /agent/summary")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/refresh/csv")

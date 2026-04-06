@@ -584,17 +584,25 @@ async def _call_chat_json(
         ],
         "response_format": {"type": "json_object"},
     }
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        response = await client.post(
-            f"{base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=request_payload,
-        )
-        response.raise_for_status()
-        payload = response.json()
+    max_retries = 3
+    for attempt in range(max_retries):
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=request_payload,
+            )
+            if response.status_code == 429 and attempt < max_retries - 1:
+                wait = 2 ** attempt  # 1s, 2s, 4s
+                print(f"[{model}] 429 rate limit, retrying in {wait}s...")
+                await asyncio.sleep(wait)
+                continue
+            response.raise_for_status()
+            payload = response.json()
+            break
 
     raw_text = (
         (((payload.get("choices") or [{}])[0].get("message") or {}).get("content"))
