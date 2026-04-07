@@ -27,9 +27,37 @@ const styles = {
   scanSpinner: { width: '48px', height: '48px', border: '3px solid #1e293b', borderTop: '3px solid #7dd3fc', borderRadius: '50%', animation: 'spin 1s linear infinite' },
   scanText: { color: '#7dd3fc', fontSize: '1rem', letterSpacing: '0.2em', fontFamily: "'Courier New', monospace" },
   scanSub: { color: '#475569', fontSize: '0.72rem', letterSpacing: '0.1em' },
+  promptWrap: { background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px', padding: '1rem' },
+  promptTitle: { color: '#7dd3fc', fontSize: '0.9rem', marginBottom: '0.75rem', letterSpacing: '0.08em' },
+  promptText: {
+    width: '100%',
+    minHeight: '240px',
+    background: '#020617',
+    color: '#cbd5e1',
+    border: '1px solid #334155',
+    borderRadius: '6px',
+    padding: '0.75rem',
+    fontFamily: "'Courier New', monospace",
+    fontSize: '0.8rem',
+    resize: 'vertical',
+    outline: 'none',
+    boxSizing: 'border-box',
+  },
+  promptActions: { display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem' },
+  promptHint: { color: '#64748b', fontSize: '0.72rem' },
+  saveBtn: {
+    background: '#1e293b',
+    border: '1px solid #334155',
+    color: '#94a3b8',
+    padding: '6px 14px',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.75rem',
+    letterSpacing: '0.05em',
+  },
 };
 
-const TABS = ['MATRIX', 'REASONING', 'LEADERBOARD'];
+const TABS = ['MATRIX', 'REASONING', 'LEADERBOARD', 'SYSTEM PROMPT'];
 
 export default function App() {
   const [tab, setTab] = useState('MATRIX');
@@ -41,6 +69,9 @@ export default function App() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [promptSavedAt, setPromptSavedAt] = useState('');
+  const [promptSaving, setPromptSaving] = useState(false);
 
   const attachAgentAnalysis = (rawSignals, agent) => {
     if (!rawSignals?.length) return [];
@@ -124,6 +155,38 @@ export default function App() {
     return () => clearInterval(interval);
   }, [loadFromApi]);
 
+  useEffect(() => {
+    const loadSystemPrompt = async () => {
+      try {
+        const res = await fetch(`${API}/agent/system-prompt`);
+        if (!res.ok) throw new Error(`Prompt fetch failed: ${res.status}`);
+        const data = await res.json();
+        setSystemPrompt(data.prompt || '');
+      } catch (e) {
+        setError(`Cannot load system prompt from backend. (${e.message})`);
+      }
+    };
+    loadSystemPrompt();
+  }, []);
+
+  const saveSystemPrompt = async () => {
+    setPromptSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/agent/system-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: systemPrompt }),
+      });
+      if (!res.ok) throw new Error(`Prompt save failed: ${res.status}`);
+      setPromptSavedAt(new Date().toLocaleTimeString());
+    } catch (e) {
+      setError(`Cannot save system prompt to backend. (${e.message})`);
+    } finally {
+      setPromptSaving(false);
+    }
+  };
+
   return (
     <div style={styles.app}>
       <style>{`
@@ -185,6 +248,25 @@ export default function App() {
         </>
       )}
       {tab === 'LEADERBOARD' && <Leaderboard entries={leaderboard} />}
+      {tab === 'SYSTEM PROMPT' && (
+        <div style={styles.promptWrap}>
+          <div style={styles.promptTitle}>SYSTEM PROMPT</div>
+          <textarea
+            style={styles.promptText}
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            placeholder="Write your system prompt here. This saves to backend/prompts/openclaw_system_prompt.txt."
+          />
+          <div style={styles.promptActions}>
+            <button style={styles.saveBtn} onClick={saveSystemPrompt} disabled={promptSaving}>
+              {promptSaving ? 'SAVING...' : 'SAVE PROMPT'}
+            </button>
+            <span style={styles.promptHint}>
+              {promptSavedAt ? `Saved at ${promptSavedAt}` : 'Not saved yet'}
+            </span>
+          </div>
+        </div>
+      )}
       </>
       )}
     </div>

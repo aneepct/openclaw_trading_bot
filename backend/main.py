@@ -4,10 +4,12 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,12 @@ from csv_signals import get_latest_signals as get_csv_pipeline_signals
 import config as app_config
 from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
 from csv_refresh import csv_refresh_loop, export_all_csvs, make_default_cfg
+
+_PROMPT_FILE = Path(__file__).parent / "prompts" / "openclaw_system_prompt.txt"
+
+
+class SystemPromptPayload(BaseModel):
+    prompt: str
 
 
 def get_latest_signals():
@@ -171,6 +179,31 @@ async def get_ticker(hours: int = 1):
         }
     except Exception as e:
         logger.exception("Error in /ticker")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/agent/system-prompt")
+async def get_system_prompt():
+    """Return current system prompt text used by the agent."""
+    try:
+        prompt = _PROMPT_FILE.read_text(encoding="utf-8").strip() if _PROMPT_FILE.exists() else ""
+        return {"prompt": prompt}
+    except Exception as e:
+        logger.exception("Error in /agent/system-prompt GET")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agent/system-prompt")
+async def update_system_prompt(payload: SystemPromptPayload):
+    """Persist system prompt and update in-memory config for immediate use."""
+    try:
+        _PROMPT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cleaned = payload.prompt.strip()
+        _PROMPT_FILE.write_text(cleaned + "\n", encoding="utf-8")
+        app_config.AGENT_SYSTEM_PROMPT = cleaned
+        return {"ok": True, "prompt_length": len(cleaned)}
+    except Exception as e:
+        logger.exception("Error in /agent/system-prompt POST")
         raise HTTPException(status_code=500, detail=str(e))
 
 
