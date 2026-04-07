@@ -58,7 +58,9 @@ services:
       - OPENCLAW_GATEWAY_BIND=lan
     command: >
       sh -lc "mkdir -p /root/.openclaw/workspace &&
-      printf '%s' '{\"gateway\":{\"mode\":\"local\",\"bind\":\"lan\"},\"agents\":{\"defaults\":{\"workspace\":\"/root/.openclaw/workspace\"}}}' > /root/.openclaw/openclaw.json &&
+      if [ ! -f /root/.openclaw/openclaw.json ]; then
+        printf '%s' '{\"gateway\":{\"mode\":\"local\",\"bind\":\"lan\"},\"agents\":{\"defaults\":{\"workspace\":\"/root/.openclaw/workspace\"}}}' > /root/.openclaw/openclaw.json;
+      fi &&
       openclaw gateway --port 18789 --allow-unconfigured"
     depends_on:
       backend:
