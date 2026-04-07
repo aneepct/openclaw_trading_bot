@@ -213,9 +213,13 @@ async def main() -> None:
     rows_by_currency: dict[str, list[dict[str, Any]]] = {"BTC": [], "ETH": []}
     combined_rows: list[dict[str, Any]] = []
 
+    # If today's 16:00 UTC settlement has already passed, scan tomorrow instead
+    tomorrow = (now + timedelta(days=1)).date()
+    scan_date = tomorrow if now.hour >= 16 else today
+
     async with httpx.AsyncClient(timeout=20) as client:
         for currency in ("BTC", "ETH"):
-            slug = build_daily_slug(currency, today)
+            slug = build_daily_slug(currency, scan_date)
             markets = await fetch_event_markets(client, slug)
             print(f"[{currency}] slug={slug} → {len(markets)} markets")
 

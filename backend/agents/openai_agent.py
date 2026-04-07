@@ -190,10 +190,14 @@ def _enforce_actions_from_market(
         market_price_pct = market_prices_by_id.get(market_id)
         if market_price_pct is None:
             market_price_pct = market_prices_by_question.get(market_name)
-        signal["action"] = _derived_action_from_probs(
-            float(signal.get("fair_value_pct") or 0.0),
-            market_price_pct,
-        )
+        # Only override when we have a real market price to compare against.
+        # If market_price_pct is None (ranked was empty or lookup missed),
+        # keep the existing action set by the LLM or _default_signal_analysis.
+        if market_price_pct is not None:
+            signal["action"] = _derived_action_from_probs(
+                float(signal.get("fair_value_pct") or 0.0),
+                market_price_pct,
+            )
 
     trade_actions_by_market = {
         _ascii_clean(signal.get("market", "")): signal.get("action", "HOLD")
@@ -231,10 +235,14 @@ def _default_trade(signal: dict[str, Any]) -> dict[str, Any]:
 
 
 def _default_signal_analysis(signal: dict[str, Any]) -> dict[str, Any]:
-    action = "BUY YES" if signal.get("direction") == "BUY" else "BUY NO"
+    deribit_prob = float(signal.get("deribit_prob") or 0.0)
+    poly_price = float(signal.get("polymarket_price") or 0.0)
     edge_pct = float(signal.get("abs_edge_pct") or 0.0)
-    fair_value_pct = round(float(signal.get("deribit_prob") or 0.0) * 100, 2)
+    fair_value_pct = round(deribit_prob * 100, 2)
+    # Derive action directly from probabilities — never guess HOLD on large edges
+    action = _derived_action_from_probs(fair_value_pct, poly_price * 100)
     return {
+        "market_id": signal.get("polymarket_market_id", ""),  # required for ID-based lookup
         "market": signal.get("polymarket_question"),
         "action": action,
         "fair_value_pct": fair_value_pct,
@@ -242,8 +250,8 @@ def _default_signal_analysis(signal: dict[str, Any]) -> dict[str, Any]:
         "conviction": "high" if edge_pct >= 10 else "medium" if edge_pct >= 5 else "low",
         "trade_type": "mispricing",
         "rationale": (
-            f"Deribit implies {float(signal.get('deribit_prob') or 0.0) * 100:.1f}% while "
-            f"Polymarket is at {float(signal.get('polymarket_price') or 0.0) * 100:.1f}%."
+            f"Deribit implies {deribit_prob * 100:.1f}% while "
+            f"Polymarket is at {poly_price * 100:.1f}%."
         ),
         "risk": (
             f"Interpolation method {signal.get('interp_method') or 'n/a'} with "
@@ -268,22 +276,29 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
 
 
 def _compact_signal(signal: dict[str, Any]) -> dict[str, Any]:
+    deribit_prob = float(signal.get("deribit_prob") or 0.0)
+    poly_price = float(signal.get("polymarket_price") or 0.0)
+    abs_edge = float(signal.get("abs_edge_pct") or 0.0)
+    # Pre-compute scanner-derived action so the LLM has a ground-truth reference
+    scanner_action = _derived_action_from_probs(round(deribit_prob * 100, 2), round(poly_price * 100, 2))
     return {
         "market_id": signal.get("polymarket_market_id"),
         "market": signal.get("polymarket_question"),
-        "direction": signal.get("direction"),
-        "option_type": signal.get("option_type"),
-        "deribit_prob": signal.get("deribit_prob"),
-        "polymarket_price": signal.get("polymarket_price"),
+        "spot_price": signal.get("spot_price"),
+        "strike": signal.get("strike"),
+        "days_to_expiry": signal.get("t_poly_days"),
+        "option_type": signal.get("option_type"),        # C = call (P(S>K)), P = put
+        "deribit_prob_pct": round(deribit_prob * 100, 2),   # ground-truth fair value %
+        "polymarket_price_pct": round(poly_price * 100, 2), # retail market price %
         "edge_pct": signal.get("edge_pct"),
-        "abs_edge_pct": signal.get("abs_edge_pct"),
+        "abs_edge_pct": abs_edge,
+        "scanner_action": scanner_action,   # what pure math says: BUY YES / BUY NO / HOLD
         "payout_ratio": signal.get("payout_ratio"),
         "liquidity_usd": signal.get("liquidity_usd"),
-        "instrument_t1": signal.get("instrument_t1"),
-        "instrument_t2": signal.get("instrument_t2"),
         "interp_method": signal.get("interp_method"),
-        "interp_weight_w": signal.get("interp_weight_w"),
-        "sigma_interp": signal.get("sigma_interp"),
+        "sigma_interp": signal.get("sigma_interp"),       # implied vol at interpolated point
+        "T1_days": signal.get("T1_days"),
+        "T2_days": signal.get("T2_days"),
         "scanner_reasoning": signal.get("reasoning"),
     }
 
@@ -523,6 +538,7 @@ def _provider_stub(
     summary: str,
     trade_hints: list[dict[str, Any]],
     signal_analyses: list[dict[str, Any]],
+    ranked: list[dict[str, Any]] | None = None,
     structural_insight: str = "",
     raw_text: str = "",
 ) -> dict[str, Any]:
@@ -537,7 +553,7 @@ def _provider_stub(
             None,
             trade_hints=trade_hints,
             signal_analyses=signal_analyses,
-            ranked=[],
+            ranked=ranked or [],  # pass through so action enforcement has market prices
             fallback_summary=summary,
             fallback_structural_insight=structural_insight,
         ),
@@ -547,24 +563,26 @@ def _provider_stub(
 
 def _summary_prompt(ranked: list[dict[str, Any]]) -> str:
     return (
-        "Summarize the Open Claw signals for the frontend. "
-        "Return strict JSON with keys: summary, structural_insight, trades, signal_analyses. "
-        "Use a professional tone and plain ASCII only. "
-        "`summary` must be a short paragraph under 220 characters. `structural_insight` must be one "
-        "sentence under 120 characters. "
-        "`conviction` must be one of low, medium, high. "
-        "sentence. `trades` should be an array of objects with keys: market, "
-        "action, conviction, edge_pct, rationale. `signal_analyses` should be an array "
-        "with one object per signal using keys: market_id, market, action, fair_value_pct, bias, conviction, "
-        "trade_type, rationale, risk. "
-        "IMPORTANT: `market_id` must be copied EXACTLY from the input market_id field. "
-        "`market` must be copied EXACTLY from the input market field. "
-        "`fair_value_pct` must be a numeric probability from 0 to 100 (e.g. 35.5 means 35.5%). "
-        "`action` must be one of BUY YES, BUY NO, HOLD. "
-        "`trade_type` must be one of mispricing, momentum, hedge, range, hold. "
-        "Keep trade rationale under 120 characters, bias under 80 characters, signal rationale under 120 characters, and risk under 100 characters. "
-        "Do not use stars, arrows, emojis, or slang.\n\n"
-        f"Signals JSON:\n{json.dumps([_compact_signal(s) for s in ranked], indent=2)}"
+        "You are a professional derivatives trader reviewing Deribit vs Polymarket mispricing signals.\n"
+        "Return strict JSON with keys: summary, structural_insight, trades, signal_analyses.\n"
+        "Use professional tone, plain ASCII only. No emojis, stars, or slang.\n\n"
+        "ACTION RULES — follow exactly, no exceptions:\n"
+        "  - scanner_action is the mathematically correct action derived from deribit_prob_pct vs polymarket_price_pct.\n"
+        "  - Your action MUST agree with scanner_action unless you have a specific structural reason to override.\n"
+        "  - abs_edge_pct >= 20: action = scanner_action, conviction = high (large mispricing, act on it).\n"
+        "  - abs_edge_pct 5-19: action = scanner_action, conviction = medium.\n"
+        "  - abs_edge_pct < 5: use judgment, may HOLD if liquidity or interp quality is poor.\n"
+        "  - HOLD is only valid when abs_edge_pct < 5 OR liquidity_usd < 2000 OR interp_method is T2-only with poor fit.\n\n"
+        "FIELD RULES:\n"
+        "  - market_id: copy EXACTLY from input market_id field.\n"
+        "  - market: copy EXACTLY from input market field.\n"
+        "  - fair_value_pct: use deribit_prob_pct from input (0-100 scale).\n"
+        "  - action: one of BUY YES, BUY NO, HOLD.\n"
+        "  - conviction: one of low, medium, high.\n"
+        "  - trade_type: one of mispricing, momentum, hedge, range, hold.\n"
+        "  - summary: under 220 chars. structural_insight: under 120 chars.\n"
+        "  - rationale: under 120 chars. bias: under 80 chars. risk: under 100 chars.\n\n"
+        f"Signals (sorted by edge, highest first):\n{json.dumps([_compact_signal(s) for s in ranked], indent=2)}"
     )
 
 
@@ -584,9 +602,15 @@ async def _call_chat_json(
         ],
         "response_format": {"type": "json_object"},
     }
-    max_retries = 3
+    # Retry on 429 (rate limit) and 503/502/504 (transient server errors).
+    # Backoff is kept short so the frontend request stays within ~90s total.
+    # Retry-After header is respected when the provider sends one.
+    _RETRYABLE = {429, 502, 503, 504}
+    _BACKOFF = [5, 15, 30]   # 3 retries: 5s → 15s → 30s  (≤ ~55s extra wait)
+    max_retries = len(_BACKOFF) + 1  # 4 attempts total
+    payload: dict[str, Any] = {}
     for attempt in range(max_retries):
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
                 headers={
@@ -595,9 +619,15 @@ async def _call_chat_json(
                 },
                 json=request_payload,
             )
-            if response.status_code == 429 and attempt < max_retries - 1:
-                wait = 2 ** attempt  # 1s, 2s, 4s
-                print(f"[{model}] 429 rate limit, retrying in {wait}s...")
+            if response.status_code in _RETRYABLE and attempt < max_retries - 1:
+                # Respect Retry-After / x-ratelimit-reset-requests when present
+                retry_after = response.headers.get("retry-after") or response.headers.get("x-ratelimit-reset-requests")
+                try:
+                    wait = float(retry_after) if retry_after else _BACKOFF[attempt]
+                except (TypeError, ValueError):
+                    wait = _BACKOFF[attempt]
+                wait = min(wait, 30.0)  # cap per-wait at 30s to stay UI-responsive
+                print(f"[{model}] HTTP {response.status_code}, retrying in {wait:.0f}s (attempt {attempt + 1}/{max_retries - 1})...")
                 await asyncio.sleep(wait)
                 continue
             response.raise_for_status()
@@ -644,6 +674,7 @@ async def _build_provider_summary(
             summary=f"{provider.upper()} is not configured for backend summaries.",
             trade_hints=trade_hints,
             signal_analyses=signal_analyses,
+            ranked=ranked,  # preserve market prices for action enforcement
         )
 
     try:
@@ -663,6 +694,7 @@ async def _build_provider_summary(
             summary=f"{provider.upper()} summary request failed: {exc}",
             trade_hints=trade_hints,
             signal_analyses=signal_analyses,
+            ranked=ranked,  # preserve market prices for action enforcement
         )
 
     normalized = _normalize_payload(
@@ -779,14 +811,44 @@ async def build_agent_summary(signals: list[dict[str, Any]]) -> dict[str, Any]:
         ),
     )
     providers = {item["provider"]: item for item in provider_results}
-    primary = providers["openai"]
+
+    # Use first WORKING provider as primary (Grok is fallback when OpenAI rate-limits)
+    _preferred_order = ["openai", "grok", "gemini"]
+    primary = next(
+        (providers[p] for p in _preferred_order if providers.get(p, {}).get("enabled")),
+        providers["openai"],  # last resort: use stub even if disabled
+    )
+    preferred_name = primary.get("provider", "openai")
+
+    # Build per-signal consensus across all providers
+    # A signal has consensus when 2+ providers agree on the same action
+    vote_map: dict[str, list[str]] = {}
+    for prov_data in providers.values():
+        for sa in prov_data.get("signal_analyses", []):
+            key = sa.get("market_id") or sa.get("market", "")
+            if key:
+                vote_map.setdefault(key, []).append(sa.get("action", "HOLD"))
+    consensus: dict[str, dict[str, Any]] = {}
+    for key, votes in vote_map.items():
+        counts: dict[str, int] = {}
+        for v in votes:
+            counts[v] = counts.get(v, 0) + 1
+        top_action = max(counts, key=lambda a: counts[a])
+        consensus[key] = {
+            "action": top_action,
+            "agreement": counts[top_action],
+            "total": len(votes),
+            "strong": counts[top_action] >= 2,  # 2+ of 3 providers agree
+        }
+
     return {
         "enabled": any(item.get("enabled") for item in providers.values()),
         "source": "comparison",
         "model": primary.get("model"),
         "schema_version": "3",
         "providers": providers,
-        "preferred_provider": "openai",
+        "preferred_provider": preferred_name,
+        "consensus": consensus,
         "summary": primary.get("summary", ""),
         "structural_insight": primary.get("structural_insight", ""),
         "trades": primary.get("trades", []),

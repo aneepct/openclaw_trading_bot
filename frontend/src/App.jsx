@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import LiveMatrix from './components/LiveMatrix';
-import AgentSummary from './components/AgentSummary';
 import ReasoningCards from './components/ReasoningCard';
 import Leaderboard from './components/Leaderboard';
+import LoadingScreen from './components/LoadingScreen';
 import { isPolymarketMarketRow } from './polymarketFilters';
 
 const API = (process.env.REACT_APP_API_URL || 'http://localhost:8000').replace(/\/$/, '');
@@ -102,8 +102,10 @@ export default function App() {
     }));
   };
 
-  /** Load matrix + leaderboard only — called every 30s. Does NOT call AI providers. */
-  const loadFromApi = useCallback(async () => {
+  /** Load matrix + leaderboard only — called every 30s. Does NOT call AI providers.
+   *  Accepts an optional agentOverride so runFullRefresh can pass the fresh agent
+   *  directly without waiting for React state to flush (stale closure fix). */
+  const loadFromApi = useCallback(async (agentOverride) => {
     setError(null);
     try {
       const [matrixRes, lbRes] = await Promise.all([
@@ -114,7 +116,8 @@ export default function App() {
       const matrix = await matrixRes.json();
       const lb = lbRes.ok ? await lbRes.json() : { entries: [] };
       const polyOnly = (matrix.signals || []).filter(isPolymarketMarketRow);
-      setSignals(prev => attachAgentAnalysis(polyOnly, agentSummary));
+      const effectiveAgent = agentOverride !== undefined ? agentOverride : agentSummary;
+      setSignals(attachAgentAnalysis(polyOnly, effectiveAgent));
       setLeaderboard((lb.entries || []).filter(isPolymarketMarketRow));
       setTotalScanned(polyOnly.length);
       setLastScan(new Date().toLocaleTimeString());
@@ -141,7 +144,7 @@ export default function App() {
       const agentRes = await fetch(`${API}/agent/summary?limit=22`);
       const agent = agentRes.ok ? await agentRes.json() : null;
       setAgentSummary(agent);
-      await loadFromApi();
+      await loadFromApi(agent);
     } catch (e) {
       setError(`Cannot reach backend at ${API}. (${e.message})`);
     } finally {
@@ -150,10 +153,29 @@ export default function App() {
   }, [loadFromApi]);
 
   useEffect(() => {
+    // Load matrix immediately, then fetch AI summary and re-attach in background
     loadFromApi();
-    const interval = setInterval(loadFromApi, 30000);
-    return () => clearInterval(interval);
-  }, [loadFromApi]);
+    fetch(`${API}/agent/summary?limit=22`)
+      .then(r => r.ok ? r.json() : null)
+      .then(agent => {
+        if (agent) {
+          setAgentSummary(agent);
+          loadFromApi(agent);
+        }
+      })
+      .catch(() => {});
+
+    // Auto-poll matrix every 2 minutes
+    const matrixInterval = setInterval(loadFromApi, 120000);
+
+    // Full refresh (scan + CSV + AI) every 1 hour
+    const fullInterval = setInterval(runFullRefresh, 3600000);
+
+    return () => {
+      clearInterval(matrixInterval);
+      clearInterval(fullInterval);
+    };
+  }, [loadFromApi, runFullRefresh]);
 
   useEffect(() => {
     const loadSystemPrompt = async () => {
@@ -208,11 +230,7 @@ export default function App() {
       {error && <div style={styles.error}>{error}</div>}
 
       {initialLoading ? (
-        <div style={styles.scanOverlay}>
-          <div style={styles.scanSpinner} />
-          <div style={styles.scanText}>SCANNING...</div>
-          <div style={styles.scanSub}>Fetching Deribit + Polymarket data</div>
-        </div>
+        <LoadingScreen />
       ) : (
       <>
       <div style={styles.topBar}>
@@ -241,12 +259,7 @@ export default function App() {
       </div>
 
       {tab === 'MATRIX' && <LiveMatrix signals={signals} totalScanned={totalScanned} />}
-      {tab === 'REASONING' && (
-        <>
-          <AgentSummary agentSummary={agentSummary} />
-          <ReasoningCards signals={signals} />
-        </>
-      )}
+      {tab === 'REASONING' && <ReasoningCards signals={signals} />}
       {tab === 'LEADERBOARD' && <Leaderboard entries={leaderboard} />}
       {tab === 'SYSTEM PROMPT' && (
         <div style={styles.promptWrap}>

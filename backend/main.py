@@ -288,10 +288,21 @@ async def get_agent_summary(limit: int = 22, force: bool = False):
             summary["signal_count"] = len(signals[:limit])
             summary["cached"] = False
             summary["cache_age_seconds"] = 0
+            summary["stale"] = False
             _summary_cache.store(summary)
             return summary
         except Exception as e:
             logger.exception("Error in /agent/summary")
+            # If providers all failed but we have a previous response, return it
+            # as stale data rather than a 500 — trading must always have a signal.
+            if _summary_cache.data is not None:
+                stale = dict(_summary_cache.data)
+                stale["cached"] = True
+                stale["stale"] = True
+                stale["stale_reason"] = str(e)
+                stale["cache_age_seconds"] = int(_summary_cache.age_seconds())
+                logger.warning("All AI providers failed — serving stale cache (age=%ds): %s", int(_summary_cache.age_seconds()), e)
+                return stale
             raise HTTPException(status_code=500, detail=str(e))
 
 
