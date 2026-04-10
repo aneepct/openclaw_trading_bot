@@ -329,7 +329,7 @@ async def _call_openai_json(user_prompt: str) -> tuple[str, dict[str, Any] | Non
     request_payload = {
         "model": config.OPENAI_MODEL,
         "reasoning": {"effort": config.OPENAI_REASONING_EFFORT},
-        "instructions": config.AGENT_SYSTEM_PROMPT,
+        "instructions": config.OPENAI_SYSTEM_PROMPT,
         "input": user_prompt,
     }
 
@@ -677,12 +677,17 @@ async def _build_provider_summary(
             ranked=ranked,  # preserve market prices for action enforcement
         )
 
+    _provider_prompt_map = {
+        "openai": config.OPENAI_SYSTEM_PROMPT,
+        "gemini": config.GEMINI_SYSTEM_PROMPT,
+        "grok":   config.GROK_SYSTEM_PROMPT,
+    }
     try:
         raw_text, parsed = await _call_chat_json(
             base_url=base_url,
             api_key=api_key,
             model=model,
-            system_prompt=config.AGENT_SYSTEM_PROMPT,
+            system_prompt=_provider_prompt_map.get(provider, config.AGENT_SYSTEM_PROMPT),
             user_prompt=_summary_prompt(ranked),
         )
     except Exception as exc:

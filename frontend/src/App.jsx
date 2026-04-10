@@ -69,8 +69,9 @@ export default function App() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
-  const [systemPrompt, setSystemPrompt] = useState('');
-  const [promptSavedAt, setPromptSavedAt] = useState('');
+  const [promptProvider, setPromptProvider] = useState('openai');
+  const [prompts, setPrompts] = useState({ openai: '', gemini: '', grok: '' });
+  const [promptSavedAt, setPromptSavedAt] = useState({ openai: '', gemini: '', grok: '' });
   const [promptSaving, setPromptSaving] = useState(false);
 
   const attachAgentAnalysis = (rawSignals, agent) => {
@@ -178,32 +179,34 @@ export default function App() {
   }, [loadFromApi, runFullRefresh]);
 
   useEffect(() => {
-    const loadSystemPrompt = async () => {
-      try {
-        const res = await fetch(`${API}/agent/system-prompt`);
-        if (!res.ok) throw new Error(`Prompt fetch failed: ${res.status}`);
-        const data = await res.json();
-        setSystemPrompt(data.prompt || '');
-      } catch (e) {
-        setError(`Cannot load system prompt from backend. (${e.message})`);
+    const loadPrompts = async () => {
+      for (const provider of ['openai', 'gemini', 'grok']) {
+        try {
+          const res = await fetch(`${API}/agent/system-prompt/${provider}`);
+          if (!res.ok) throw new Error(`Prompt fetch failed: ${res.status}`);
+          const data = await res.json();
+          setPrompts(p => ({ ...p, [provider]: data.prompt || '' }));
+        } catch (e) {
+          setError(`Cannot load ${provider} prompt from backend. (${e.message})`);
+        }
       }
     };
-    loadSystemPrompt();
+    loadPrompts();
   }, []);
 
   const saveSystemPrompt = async () => {
     setPromptSaving(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/agent/system-prompt`, {
+      const res = await fetch(`${API}/agent/system-prompt/${promptProvider}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: systemPrompt }),
+        body: JSON.stringify({ prompt: prompts[promptProvider] }),
       });
       if (!res.ok) throw new Error(`Prompt save failed: ${res.status}`);
-      setPromptSavedAt(new Date().toLocaleTimeString());
+      setPromptSavedAt(p => ({ ...p, [promptProvider]: new Date().toLocaleTimeString() }));
     } catch (e) {
-      setError(`Cannot save system prompt to backend. (${e.message})`);
+      setError(`Cannot save ${promptProvider} prompt to backend. (${e.message})`);
     } finally {
       setPromptSaving(false);
     }
@@ -263,19 +266,34 @@ export default function App() {
       {tab === 'LEADERBOARD' && <Leaderboard entries={leaderboard} />}
       {tab === 'SYSTEM PROMPT' && (
         <div style={styles.promptWrap}>
-          <div style={styles.promptTitle}>SYSTEM PROMPT</div>
+          <div style={{ display: 'flex', gap: '1px', marginBottom: '1rem', background: '#1e293b', borderRadius: '6px', padding: '4px', width: 'fit-content' }}>
+            {['openai', 'gemini', 'grok'].map(p => (
+              <button
+                key={p}
+                onClick={() => setPromptProvider(p)}
+                style={{
+                  ...styles.tab,
+                  ...(promptProvider === p ? styles.tabActive : {}),
+                  fontSize: '0.75rem',
+                  padding: '6px 16px',
+                }}
+              >
+                {p === 'openai' ? 'OPENAI' : p === 'gemini' ? 'GEMINI' : 'GROK'}
+              </button>
+            ))}
+          </div>
           <textarea
             style={styles.promptText}
-            value={systemPrompt}
-            onChange={(e) => setSystemPrompt(e.target.value)}
-            placeholder="Write your system prompt here. This saves to backend/prompts/openclaw_system_prompt.txt."
+            value={prompts[promptProvider]}
+            onChange={(e) => setPrompts(prev => ({ ...prev, [promptProvider]: e.target.value }))}
+            placeholder={`Write the ${promptProvider.toUpperCase()} system prompt here.`}
           />
           <div style={styles.promptActions}>
             <button style={styles.saveBtn} onClick={saveSystemPrompt} disabled={promptSaving}>
               {promptSaving ? 'SAVING...' : 'SAVE PROMPT'}
             </button>
             <span style={styles.promptHint}>
-              {promptSavedAt ? `Saved at ${promptSavedAt}` : 'Not saved yet'}
+              {promptSavedAt[promptProvider] ? `Saved at ${promptSavedAt[promptProvider]}` : 'Not saved yet'}
             </span>
           </div>
         </div>

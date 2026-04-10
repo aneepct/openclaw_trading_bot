@@ -23,7 +23,16 @@ import config as app_config
 from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
 from csv_refresh import csv_refresh_loop, export_all_csvs, make_default_cfg
 
-_PROMPT_FILE = Path(__file__).parent / "prompts" / "openclaw_system_prompt.txt"
+_PROVIDER_PROMPT_FILES = {
+    "openai": Path(__file__).parent / "prompts" / "openai_system_prompt.txt",
+    "gemini": Path(__file__).parent / "prompts" / "gemini_system_prompt.txt",
+    "grok":   Path(__file__).parent / "prompts" / "grok_system_prompt.txt",
+}
+_PROVIDER_CONFIG_ATTRS = {
+    "openai": "OPENAI_SYSTEM_PROMPT",
+    "gemini": "GEMINI_SYSTEM_PROMPT",
+    "grok":   "GROK_SYSTEM_PROMPT",
+}
 
 
 class SystemPromptPayload(BaseModel):
@@ -182,28 +191,37 @@ async def get_ticker(hours: int = 1):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/agent/system-prompt")
-async def get_system_prompt():
-    """Return current system prompt text used by the agent."""
+@app.get("/agent/system-prompt/{provider}")
+async def get_provider_system_prompt(provider: str):
+    """Return the system prompt for a specific AI provider."""
+    if provider not in _PROVIDER_PROMPT_FILES:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
     try:
-        prompt = _PROMPT_FILE.read_text(encoding="utf-8").strip() if _PROMPT_FILE.exists() else ""
-        return {"prompt": prompt}
+        f = _PROVIDER_PROMPT_FILES[provider]
+        if f.exists():
+            prompt = f.read_text(encoding="utf-8").strip()
+        else:
+            prompt = getattr(app_config, _PROVIDER_CONFIG_ATTRS[provider], "")
+        return {"provider": provider, "prompt": prompt}
     except Exception as e:
-        logger.exception("Error in /agent/system-prompt GET")
+        logger.exception("Error in /agent/system-prompt/%s GET", provider)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/agent/system-prompt")
-async def update_system_prompt(payload: SystemPromptPayload):
-    """Persist system prompt and update in-memory config for immediate use."""
+@app.post("/agent/system-prompt/{provider}")
+async def update_provider_system_prompt(provider: str, payload: SystemPromptPayload):
+    """Persist a provider-specific system prompt and update in-memory config."""
+    if provider not in _PROVIDER_PROMPT_FILES:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
     try:
-        _PROMPT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        f = _PROVIDER_PROMPT_FILES[provider]
+        f.parent.mkdir(parents=True, exist_ok=True)
         cleaned = payload.prompt.strip()
-        _PROMPT_FILE.write_text(cleaned + "\n", encoding="utf-8")
-        app_config.AGENT_SYSTEM_PROMPT = cleaned
-        return {"ok": True, "prompt_length": len(cleaned)}
+        f.write_text(cleaned + "\n", encoding="utf-8")
+        setattr(app_config, _PROVIDER_CONFIG_ATTRS[provider], cleaned)
+        return {"ok": True, "provider": provider, "prompt_length": len(cleaned)}
     except Exception as e:
-        logger.exception("Error in /agent/system-prompt POST")
+        logger.exception("Error in /agent/system-prompt/%s POST", provider)
         raise HTTPException(status_code=500, detail=str(e))
 
 

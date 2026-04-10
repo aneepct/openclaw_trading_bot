@@ -60,8 +60,8 @@ from pathlib import Path
 # ── OpenAI agent layer ────────────────────────────────────────
 
 
-def _read_prompt_file() -> str:
-    prompt_path = Path(__file__).parent / "prompts" / "openclaw_system_prompt.txt"
+def _read_provider_prompt(provider: str) -> str:
+    prompt_path = Path(__file__).parent / "prompts" / f"{provider}_system_prompt.txt"
     if not prompt_path.exists():
         return ""
     return prompt_path.read_text(encoding="utf-8").strip()
@@ -80,15 +80,18 @@ GEMINI_BASE_URL = (
 ).rstrip("/")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
 AGENT_TOP_N_SIGNALS = int(os.getenv("AGENT_TOP_N_SIGNALS", "5"))
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are the trading agent. Treat Deribit as the professional "
+    "probability surface and Polymarket as the retail market to compare against. "
+    "Use the provided signal data to explain where Polymarket is underpricing or "
+    "overpricing risk. Return concise trading guidance for the frontend with a "
+    "clear bias, ranked opportunities, and short reasoning grounded in the given "
+    "numbers only. Do not invent market data."
+)
 AGENT_SYSTEM_PROMPT = (
     os.getenv("OPENCLAW_AGENT_SYSTEM_PROMPT", "").strip()
-    or _read_prompt_file()
-    or (
-        "You are the trading agent. Treat Deribit as the professional "
-        "probability surface and Polymarket as the retail market to compare against. "
-        "Use the provided signal data to explain where Polymarket is underpricing or "
-        "overpricing risk. Return concise trading guidance for the frontend with a "
-        "clear bias, ranked opportunities, and short reasoning grounded in the given "
-        "numbers only. Do not invent market data."
-    )
+    or _DEFAULT_SYSTEM_PROMPT
 )
+OPENAI_SYSTEM_PROMPT = _read_provider_prompt("openai") or AGENT_SYSTEM_PROMPT
+GEMINI_SYSTEM_PROMPT = _read_provider_prompt("gemini") or AGENT_SYSTEM_PROMPT
+GROK_SYSTEM_PROMPT   = _read_provider_prompt("grok")   or AGENT_SYSTEM_PROMPT
