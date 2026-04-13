@@ -103,7 +103,7 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
                   {s.direction === 'BUY' ? 'Positive edge vs market price' : 'Negative edge vs market price'}
                 </div>
               </td>
-              <td style={styles.td}>
+              {/* <td style={styles.td}>
                 <ProviderDecision
                   label="OpenAI"
                   analysis={s.provider_analyses?.openai}
@@ -121,7 +121,7 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
                   label="Gemini"
                   analysis={s.provider_analyses?.gemini}
                 />
-              </td>
+              </td> */}
               <td style={styles.td}>
                 {s.polymarket_price != null ? `${(Number(s.polymarket_price) * 100).toFixed(1)}%` : '—'}
               </td>
