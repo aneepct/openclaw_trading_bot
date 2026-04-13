@@ -76,9 +76,9 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
           <tr>
             <th style={styles.th}>MARKET</th>
             <th style={styles.th}>ACTION</th>
-            <th style={styles.th}>OPENAI PROBABILITY</th>
+            {/* <th style={styles.th}>OPENAI PROBABILITY</th>
             <th style={styles.th}>GROK PROBABILITY</th>
-            <th style={styles.th}>GEMINI PROBABILITY</th>
+            <th style={styles.th}>GEMINI PROBABILITY</th> */}
             <th style={styles.th}>MARKET PRICE</th>
             <th style={styles.th}>EDGE</th>
             <th style={styles.th}>REASONING</th>
