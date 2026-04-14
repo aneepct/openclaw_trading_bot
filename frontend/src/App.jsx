@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import LiveMatrix from './components/LiveMatrix';
-import ReasoningCards from './components/ReasoningCard';
+// import ReasoningCards from './components/ReasoningCard';
 import Leaderboard from './components/Leaderboard';
 import LoadingScreen from './components/LoadingScreen';
 import { isPolymarketMarketRow } from './polymarketFilters';
@@ -57,7 +57,7 @@ const styles = {
   },
 };
 
-const TABS = ['MATRIX', 'REASONING', 'LEADERBOARD', 'SYSTEM PROMPT'];
+const TABS = ['MATRIX', /* 'REASONING', */ 'LEADERBOARD', 'SYSTEM PROMPT'];
 
 export default function App() {
   const [tab, setTab] = useState('MATRIX');
@@ -262,7 +262,7 @@ export default function App() {
       </div>
 
       {tab === 'MATRIX' && <LiveMatrix signals={signals} totalScanned={totalScanned} />}
-      {tab === 'REASONING' && <ReasoningCards signals={signals} />}
+      {/* {tab === 'REASONING' && <ReasoningCards signals={signals} />} */}
       {tab === 'LEADERBOARD' && <Leaderboard entries={leaderboard} />}
       {tab === 'SYSTEM PROMPT' && (
         <div style={styles.promptWrap}>
