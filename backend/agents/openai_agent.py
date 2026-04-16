@@ -447,14 +447,16 @@ async def build_agent_signals(candidates: list[dict[str, Any]]) -> tuple[list[di
         base = by_id.get(generated.polymarket_market_id)
         if not base:
             continue
-        # Use scanner-computed deribit_prob as fallback when agent returns 0
-        scanner_deribit_prob = float(base.get("deribit_prob") or 0.0)
-        agent_deribit_prob = float(generated.deribit_prob)
-        deribit_prob = agent_deribit_prob if agent_deribit_prob > 0 else scanner_deribit_prob
+        # Always use scanner-computed deribit_prob — it is the math-correct value from
+        # Deribit delta (and optional T1/T2 interpolation). The LLM value is ignored to
+        # prevent hallucinated probabilities from corrupting edge calculations.
+        deribit_prob = float(base.get("deribit_prob") or 0.0)
 
-        poly_price = float(generated.polymarket_price) or float(base.get("polymarket_price") or 0.0)
-        edge_pct = float(generated.edge_pct) if generated.edge_pct else round((deribit_prob - poly_price) * 100, 2)
-        abs_edge_pct = float(generated.abs_edge_pct) if generated.abs_edge_pct else abs(edge_pct)
+        # Polymarket price: prefer scanner base value; use agent value only as fallback.
+        poly_price = float(base.get("polymarket_price") or 0.0) or float(generated.polymarket_price)
+        # Always recompute edge from the authoritative probs — never accept agent's edge_pct.
+        edge_pct = round((deribit_prob - poly_price) * 100, 2)
+        abs_edge_pct = round(abs(edge_pct), 2)
 
         normalized_signals.append(
             {

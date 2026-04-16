@@ -212,9 +212,11 @@ def _compute_for_currency(
         if p1 is None and p2 is None:
             continue
 
+        interp_w = None
         if p1 is not None and p2 is not None and t1 and t2 and (t2 - t1).total_seconds() != 0:
             w = (t_star - t1).total_seconds() / (t2 - t1).total_seconds()
             w = _clamp01(w)
+            interp_w = round(w, 4)
             deribit_prob = (1.0 - w) * p1 + w * p2
         elif p1 is not None:
             deribit_prob = p1
@@ -258,7 +260,7 @@ def _compute_for_currency(
                 "instrument_t2_expiry": instrument_t2_expiry,
                 "option_type": option_type,
                 "interp_method": "interpolated" if (der1 and der2) else ("T2-only" if der2 else "T1-only"),
-                "interp_weight_w": None,
+                "interp_weight_w": interp_w,
                 "interp_confidence": "high" if (der1 and der2) else "reduced",
                 "interp_confidence_rank": 2 if (der1 and der2) else 1,
                 "interp_note": (

@@ -297,6 +297,13 @@ async def scan_once() -> list[dict]:
         abs_edge_pct = abs(edge_pct) if edge_pct is not None else None
         has_alpha = abs_edge_pct is not None and abs_edge_pct >= config.MIN_EDGE_PCT
 
+        # Compute interpolation weight for storage/debugging
+        interp_w = None
+        if t1_expiry and t2_expiry:
+            span = (t2_expiry - t1_expiry).total_seconds()
+            if span > 0:
+                interp_w = round(max(0.0, min(1.0, (t_poly_dt - t1_expiry).total_seconds() / span)), 4)
+
         candidates.append(
             {
                 "instrument_t1": t1_inst["instrument_name"] if t1_inst else "N/A",
@@ -305,7 +312,7 @@ async def scan_once() -> list[dict]:
                 "instrument_t2_expiry": instrument_expiry_iso(t2_inst),
                 "option_type": option_type,
                 "interp_method": method,
-                "interp_weight_w": None,
+                "interp_weight_w": interp_w,
                 "interp_confidence": "high" if t1_inst and t2_inst else "reduced",
                 "interp_confidence_rank": 2 if t1_inst and t2_inst else 1,
                 "interp_note": "Two live Deribit contexts available." if t1_inst and t2_inst else "Single-context fallback used.",
