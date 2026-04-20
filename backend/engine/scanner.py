@@ -100,6 +100,12 @@ def extract_price_range_from_question(question: str) -> tuple[Optional[float], O
     return extract_price_from_question(question), None
 
 
+def is_less_than_question(question: str) -> bool:
+    """Return True for 'less than K' / 'below K' market questions."""
+    ql = question.lower()
+    return bool(re.search(r"\b(less\s+than|lower\s+than|below|under)\b", ql))
+
+
 def compute_deribit_prob(
     book1: Optional[dict],
     book2: Optional[dict],
@@ -264,6 +270,7 @@ async def fetch_crypto_price_markets() -> list[dict]:
                 continue
             market["_parsed_price"] = target_price
             market["_parsed_price_high"] = target_price_high
+            market["_is_less_than"] = is_less_than_question(question)
             results.append(market)
     return results
 
@@ -295,9 +302,12 @@ async def scan_once() -> list[dict]:
 
         strike_high = poly.get("_parsed_price_high")
         is_range = strike_high is not None
+        is_less_than = poly.get("_is_less_than", False)
 
-        # Range markets are always priced with calls: P(K_low < S <= K_high) = Delta(K_low) - Delta(K_high)
-        option_type = "C" if is_range else detect_option_type(poly.get("question", ""))
+        # Range markets → call spread: P(K_low < S <= K_high) = Delta(K_low) - Delta(K_high)
+        # Less-than markets → P(S < K) = 1 - Delta(K)  (always use a call, flip at the end)
+        # Greater-than / above markets → P(S > K) = Delta(K)
+        option_type = "C" if (is_range or is_less_than) else detect_option_type(poly.get("question", ""))
 
         t1_inst, t2_inst = find_bracket_expiries(
             currency=currency,
@@ -369,6 +379,9 @@ async def scan_once() -> list[dict]:
             deribit_prob = round(max(0.0, min(1.0, prob_low - prob_high)), 4)
         else:
             deribit_prob = compute_deribit_prob(book1, book2, option_type, t_poly_dt, t1_expiry, t2_expiry)
+            # P(S < K) = 1 - P(S > K) = 1 - Delta(K)
+            if is_less_than and deribit_prob is not None:
+                deribit_prob = round(1.0 - deribit_prob, 4)
         edge_pct = round((float(deribit_prob) - float(poly_price)) * 100, 2) if deribit_prob is not None else None
         abs_edge_pct = abs(edge_pct) if edge_pct is not None else None
         has_alpha = abs_edge_pct is not None and abs_edge_pct >= config.MIN_EDGE_PCT
