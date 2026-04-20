@@ -357,7 +357,8 @@ def _scanner_fallback_signals(candidates: list[dict[str, Any]]) -> list[dict[str
     signals = []
     for candidate in candidates:
         poly_price = float(candidate.get("polymarket_price") or 0.0)
-        deribit_prob = float(candidate.get("deribit_prob") or 0.5)
+        dp = candidate.get("deribit_prob")
+        deribit_prob = float(dp) if dp is not None else 0.5
         direction = "BUY" if deribit_prob > poly_price else "SELL"
         edge_pct = round((deribit_prob - poly_price) * 100, 2)
         abs_edge_pct = abs(edge_pct)

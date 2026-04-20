@@ -208,9 +208,11 @@ def find_bracket_expiries(
     strike_tol: float,
     option_type: str = "C",
 ) -> tuple[Optional[dict], Optional[dict]]:
-    before = []
-    after = []
     allowed_dates = allowed_deribit_expiry_dates()
+
+    # Collect candidates: (expiry_dt, strike_diff, inst)
+    before: list[tuple[datetime, float, dict]] = []
+    after: list[tuple[datetime, float, dict]] = []
 
     for inst in instruments:
         parsed = parse_instrument(inst.get("instrument_name", ""))
@@ -225,12 +227,24 @@ def find_bracket_expiries(
         if not expiry_dt or expiry_dt.date() not in allowed_dates:
             continue
         if expiry_dt <= t_poly:
-            before.append((expiry_dt, inst))
+            before.append((expiry_dt, strike_diff, inst))
         else:
-            after.append((expiry_dt, inst))
+            after.append((expiry_dt, strike_diff, inst))
 
-    t1 = max(before, key=lambda item: item[0])[1] if before else None
-    t2 = min(after, key=lambda item: item[0])[1] if after else None
+    # T1 = latest expiry before t_poly; among ties pick the closest-in-strike instrument
+    t1: Optional[dict] = None
+    if before:
+        latest_dt = max(item[0] for item in before)
+        candidates_t1 = [item for item in before if item[0] == latest_dt]
+        t1 = min(candidates_t1, key=lambda item: item[1])[2]
+
+    # T2 = earliest expiry after t_poly; among ties pick the closest-in-strike instrument
+    t2: Optional[dict] = None
+    if after:
+        earliest_dt = min(item[0] for item in after)
+        candidates_t2 = [item for item in after if item[0] == earliest_dt]
+        t2 = min(candidates_t2, key=lambda item: item[1])[2]
+
     return t1, t2
 
 

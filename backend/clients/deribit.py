@@ -4,6 +4,9 @@ from typing import Optional
 
 BASE_URL = "https://www.deribit.com/api/v2/public"
 
+# Cap concurrent order-book fetches to avoid hitting Deribit's rate limit
+_DERIBIT_SEMAPHORE = asyncio.Semaphore(3)
+
 
 async def get_instruments(currency: str = "BTC", kind: str = "option") -> list[dict]:
     """Fetch all active options for a given currency."""
@@ -17,14 +20,22 @@ async def get_instruments(currency: str = "BTC", kind: str = "option") -> list[d
 
 
 async def get_order_book(instrument_name: str, depth: int = 1) -> Optional[dict]:
-    """Fetch order book for a specific instrument."""
+    """Fetch order book for a specific instrument, retrying on 429."""
     url = f"{BASE_URL}/get_order_book"
     params = {"instrument_name": instrument_name, "depth": depth}
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("result")
+    backoff = 2.0
+    for attempt in range(4):
+        async with _DERIBIT_SEMAPHORE:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, params=params)
+                if resp.status_code == 429:
+                    await asyncio.sleep(backoff)
+                    backoff *= 2
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("result")
+    return None
 
 
 async def get_index_price(index_name: str = "btc_usd") -> Optional[float]:
