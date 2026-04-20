@@ -347,8 +347,12 @@ async def scan_once() -> list[dict]:
             prob_low = compute_deribit_prob(book1, book2, "C", t_poly_dt, t1_expiry, t2_expiry)
             prob_high = compute_deribit_prob(book1_high, book2_high, "C", t_poly_dt, t1_expiry_high, t2_expiry_high)
             if prob_low is None:
-                continue
-            deribit_prob = round(max(0.0, min(1.0, prob_low - (prob_high or 0.0))), 4)
+                # No K_low instrument: infer delta from moneyness (near-expiry approximation)
+                prob_low = 1.0 if target_price < spot else 0.0
+            if prob_high is None:
+                # No K_high instrument: infer delta from moneyness (near-expiry approximation)
+                prob_high = 1.0 if strike_high < spot else 0.0
+            deribit_prob = round(max(0.0, min(1.0, prob_low - prob_high)), 4)
         else:
             deribit_prob = compute_deribit_prob(book1, book2, option_type, t_poly_dt, t1_expiry, t2_expiry)
         edge_pct = round((float(deribit_prob) - float(poly_price)) * 100, 2) if deribit_prob is not None else None
