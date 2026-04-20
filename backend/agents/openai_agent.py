@@ -56,8 +56,8 @@ class AgentGeneratedSignal(BaseModel):
     has_alpha: bool = True
     deribit_prob: float = 0.0
     polymarket_price: float = 0.0
-    edge_pct: float = 0.0
-    abs_edge_pct: float = 0.0
+    # edge_pct and abs_edge_pct are NOT parsed from the LLM — they are always
+    # computed by the scanner from (deribit_prob - polymarket_price) * 100.
     payout_ratio: float = 0.0
     liquidity_usd: float = 0.0
     reasoning: str
@@ -290,9 +290,9 @@ def _compact_signal(signal: dict[str, Any]) -> dict[str, Any]:
         "option_type": signal.get("option_type"),        # C = call (P(S>K)), P = put
         "deribit_prob_pct": round(deribit_prob * 100, 2),   # ground-truth fair value %
         "polymarket_price_pct": round(poly_price * 100, 2), # retail market price %
-        "edge_pct": signal.get("edge_pct"),
-        "abs_edge_pct": abs_edge,
+        # edge_pct is NOT included — scanner computes it; LLM must not produce it
         "scanner_action": scanner_action,   # what pure math says: BUY YES / BUY NO / HOLD
+        "scanner_abs_edge_pct": abs_edge,   # provided for context only, not to be echoed back
         "payout_ratio": signal.get("payout_ratio"),
         "liquidity_usd": signal.get("liquidity_usd"),
         "interp_method": signal.get("interp_method"),
@@ -404,9 +404,10 @@ async def build_agent_signals(candidates: list[dict[str, Any]]) -> tuple[list[di
         "Return strict JSON with keys: summary, structural_insight, updated_summary, signals. "
         "`signals` must be an array covering ALL provided market contexts. Each signal object must include: "
         "polymarket_market_id, polymarket_question, option_type, direction, action, conviction, "
-        "has_alpha, deribit_prob, polymarket_price, edge_pct, abs_edge_pct, payout_ratio, "
+        "has_alpha, deribit_prob, polymarket_price, payout_ratio, "
         "liquidity_usd, reasoning, structural_insight, rank_label. "
-        "Use the provided deribit_prob and edge_pct as your starting point; refine if needed. "
+        "Do NOT include edge_pct or abs_edge_pct — these are computed by the scanner from the formula "
+        "(deribit_prob - polymarket_price) * 100 and will always override any value you provide. "
         "Use BUY when the right trade is BUY YES and SELL when the right trade is BUY NO. "
         "Only output dashboard-ready JSON.\n\n"
         f"Rolling summary:\n{rolling_summary or 'None'}\n\n"
@@ -500,6 +501,22 @@ async def build_agent_signals(candidates: list[dict[str, Any]]) -> tuple[list[di
     }
 
 
+def _enforce_scanner_edge_in_trades(
+    normalized: dict[str, Any],
+    trade_hints: list[dict[str, Any]],
+) -> None:
+    """Replace trade edge_pct values with scanner-computed ones from trade_hints."""
+    scanner_edge_by_market = {
+        _ascii_clean(hint.get("market", "")): hint.get("edge_pct", 0.0)
+        for hint in trade_hints
+        if hint.get("market")
+    }
+    for trade in normalized.get("trades", []):
+        market_name = _ascii_clean(trade.get("market", ""))
+        if market_name in scanner_edge_by_market:
+            trade["edge_pct"] = scanner_edge_by_market[market_name]
+
+
 def _normalize_payload(
     parsed: dict[str, Any] | None,
     *,
@@ -528,7 +545,10 @@ def _normalize_payload(
             }
         )
     normalized = _normalize_payload_content(payload.model_dump())
-    return _enforce_actions_from_market(normalized, ranked)
+    normalized = _enforce_actions_from_market(normalized, ranked)
+    # Always overwrite trade edge_pct with scanner-computed values — never trust LLM.
+    _enforce_scanner_edge_in_trades(normalized, trade_hints)
+    return normalized
 
 
 def _provider_stub(

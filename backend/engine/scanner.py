@@ -77,6 +77,29 @@ def extract_price_from_question(question: str) -> Optional[float]:
     return None
 
 
+def extract_price_range_from_question(question: str) -> tuple[Optional[float], Optional[float]]:
+    """Return (low, high) for range questions like 'between $68k and $70k',
+    or (price, None) for single-price questions."""
+    q = question.replace(",", "")
+
+    def _parse_amount(digits: str, k_suffix: Optional[str]) -> float:
+        v = float(digits)
+        if k_suffix:
+            v *= 1000
+        return v
+
+    m = re.search(
+        r"between\s+\$?([\d.]+)\s*([kK])?\s+and\s+\$?([\d.]+)\s*([kK])?",
+        q, re.IGNORECASE
+    )
+    if m:
+        low = _parse_amount(m.group(1), m.group(2))
+        high = _parse_amount(m.group(3), m.group(4))
+        return low, high
+
+    return extract_price_from_question(question), None
+
+
 def compute_deribit_prob(
     book1: Optional[dict],
     book2: Optional[dict],
@@ -222,10 +245,11 @@ async def fetch_crypto_price_markets() -> list[dict]:
         markets = await get_daily_event_markets(currency, today)
         for market in markets:
             question = market.get("question", "")
-            target_price = extract_price_from_question(question)
+            target_price, target_price_high = extract_price_range_from_question(question)
             if target_price is None:
                 continue
             market["_parsed_price"] = target_price
+            market["_parsed_price_high"] = target_price_high
             results.append(market)
     return results
 
@@ -255,7 +279,12 @@ async def scan_once() -> list[dict]:
         if t_poly_dt < datetime.now(timezone.utc):
             continue
 
-        option_type = detect_option_type(poly.get("question", ""))
+        strike_high = poly.get("_parsed_price_high")
+        is_range = strike_high is not None
+
+        # Range markets are always priced with calls: P(K_low < S <= K_high) = Delta(K_low) - Delta(K_high)
+        option_type = "C" if is_range else detect_option_type(poly.get("question", ""))
+
         t1_inst, t2_inst = find_bracket_expiries(
             currency=currency,
             strike=target_price,
@@ -267,12 +296,32 @@ async def scan_once() -> list[dict]:
         if t1_inst is None and t2_inst is None:
             continue
 
+        if is_range:
+            t1_inst_high, t2_inst_high = find_bracket_expiries(
+                currency=currency,
+                strike=strike_high,
+                t_poly=t_poly_dt,
+                instruments=deribit_instruments[currency],
+                strike_tol=strike_tol,
+                option_type="C",
+            )
+        else:
+            t1_inst_high = t2_inst_high = None
+
         async def get_book(inst: Optional[dict]):
             if inst is None:
                 return None
             return await get_order_book(inst["instrument_name"], depth=config.DERIBIT_DEPTH)
 
-        book1, book2 = await asyncio.gather(get_book(t1_inst), get_book(t2_inst))
+        if is_range:
+            book1, book2, book1_high, book2_high = await asyncio.gather(
+                get_book(t1_inst), get_book(t2_inst),
+                get_book(t1_inst_high), get_book(t2_inst_high),
+            )
+        else:
+            book1, book2 = await asyncio.gather(get_book(t1_inst), get_book(t2_inst))
+            book1_high = book2_high = None
+
         if book1 is None and book2 is None:
             continue
 
@@ -292,7 +341,16 @@ async def scan_once() -> list[dict]:
         t2_expiry = expiry_str_to_datetime(parse_instrument(t2_inst["instrument_name"])["expiry_str"]) if t2_inst else None
         method = "interpolated" if (t1_inst and t2_inst) else ("T2-only" if t2_inst else "T1-only")
 
-        deribit_prob = compute_deribit_prob(book1, book2, option_type, t_poly_dt, t1_expiry, t2_expiry)
+        if is_range:
+            t1_expiry_high = expiry_str_to_datetime(parse_instrument(t1_inst_high["instrument_name"])["expiry_str"]) if t1_inst_high else None
+            t2_expiry_high = expiry_str_to_datetime(parse_instrument(t2_inst_high["instrument_name"])["expiry_str"]) if t2_inst_high else None
+            prob_low = compute_deribit_prob(book1, book2, "C", t_poly_dt, t1_expiry, t2_expiry)
+            prob_high = compute_deribit_prob(book1_high, book2_high, "C", t_poly_dt, t1_expiry_high, t2_expiry_high)
+            if prob_low is None:
+                continue
+            deribit_prob = round(max(0.0, min(1.0, prob_low - (prob_high or 0.0))), 4)
+        else:
+            deribit_prob = compute_deribit_prob(book1, book2, option_type, t_poly_dt, t1_expiry, t2_expiry)
         edge_pct = round((float(deribit_prob) - float(poly_price)) * 100, 2) if deribit_prob is not None else None
         abs_edge_pct = abs(edge_pct) if edge_pct is not None else None
         has_alpha = abs_edge_pct is not None and abs_edge_pct >= config.MIN_EDGE_PCT
@@ -321,6 +379,7 @@ async def scan_once() -> list[dict]:
                 "market_resolution_at": t_poly_dt.isoformat(),
                 "spot_price": round(float(spot), 2),
                 "strike": target_price,
+                "strike_high": strike_high,
                 "t_poly_days": round(days_until(t_poly_dt), 2),
                 "T1_days": round(days_until(t1_expiry), 2) if t1_expiry else None,
                 "T2_days": round(days_until(t2_expiry), 2) if t2_expiry else None,
