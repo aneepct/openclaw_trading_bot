@@ -12,6 +12,7 @@ import config
 import engine.scanner as scanner_module
 import memory_store as db_module
 from agents.openai_agent import build_agent_signals
+from engine.scanner import extract_price_range_from_question, is_less_than_question, bsm_call_prob
 
 
 def _days_until(dt: datetime) -> float:
@@ -173,6 +174,13 @@ def _compute_for_currency(
         if option_type not in ("C", "P"):
             continue
 
+        polymarket_question = m.get("polymarket_question") or ""
+        _strike_low, strike_high_parsed = extract_price_range_from_question(polymarket_question)
+        is_range = strike_high_parsed is not None
+        is_lt = is_less_than_question(polymarket_question)
+        # Range and less-than markets always use call deltas; override option_type for lookup
+        lookup_option_type = "C" if (is_range or is_lt) else option_type
+
         end_dt = _utc_from_iso(m.get("end_date_iso"))
         if not end_dt:
             continue
@@ -180,64 +188,103 @@ def _compute_for_currency(
 
         # Match Deribit contexts by closest strike within tolerance.
         der1 = _find_closest_in_strike(
-            der_today_by_opt[option_type],
+            der_today_by_opt[lookup_option_type],
             strike=strike,
             strike_tol_pct=config.STRIKE_TOLERANCE_PCT,
         )
         der2 = _find_closest_in_strike(
-            der_tom_by_opt[option_type],
+            der_tom_by_opt[lookup_option_type],
             strike=strike,
             strike_tol_pct=config.STRIKE_TOLERANCE_PCT,
         )
 
+        # For range markets, also look up K_high instruments
+        der1_high = der2_high = None
+        if is_range and strike_high_parsed is not None:
+            der1_high = _find_closest_in_strike(
+                der_today_by_opt["C"],
+                strike=strike_high_parsed,
+                strike_tol_pct=config.STRIKE_TOLERANCE_PCT,
+            )
+            der2_high = _find_closest_in_strike(
+                der_tom_by_opt["C"],
+                strike=strike_high_parsed,
+                strike_tol_pct=config.STRIKE_TOLERANCE_PCT,
+            )
+
         if not der1 and not der2:
             continue
 
-        # Compute P_T1 and P_T2
-        def _context_prob(der_row: dict[str, Any]) -> tuple[Optional[float], Optional[datetime]]:
-            delta = _to_float(der_row.get("delta"))
-            expiry_str = (der_row.get("expiry_str") or "").strip()
-            expiry_dt = _expiry_str_to_datetime(expiry_str) if expiry_str else None
-            if delta is None or expiry_dt is None:
-                return None, None
-            return delta_to_prob(delta, option_type), expiry_dt
+        # Deribit spot proxy
+        spot_price = _to_float((der1 or der2 or {}).get("index_price"))
+        spot = spot_price or 0.0
 
-        p1, t1 = (None, None)
-        p2, t2 = (None, None)
-        if der1:
-            p1, t1 = _context_prob(der1)
-        if der2:
-            p2, t2 = _context_prob(der2)
+        # BSM-reprice at Polymarket resolution time: derive effective sigma from mark_iv
+        def _bsm_prob_from_row(
+            row1: Optional[dict[str, Any]],
+            row2: Optional[dict[str, Any]],
+            k: float,
+        ) -> Optional[float]:
+            now = datetime.now(timezone.utc)
+            t_poly_years = max((t_star - now).total_seconds(), 60) / 31_536_000
 
-        if p1 is None and p2 is None:
+            def _expiry_years(row: dict[str, Any]) -> Optional[float]:
+                expiry_str = (row.get("expiry_str") or "").strip()
+                expiry_dt = _expiry_str_to_datetime(expiry_str) if expiry_str else None
+                if expiry_dt is None:
+                    return None
+                return max((expiry_dt - now).total_seconds(), 60) / 31_536_000
+
+            def _sigma(row: dict[str, Any]) -> Optional[float]:
+                iv = _to_float(row.get("mark_iv"))
+                return iv / 100.0 if iv else None
+
+            s1 = _sigma(row1) if row1 else None
+            s2 = _sigma(row2) if row2 else None
+
+            if s1 is not None and s2 is not None:
+                t1y = _expiry_years(row1)
+                t2y = _expiry_years(row2)
+                if t1y is not None and t2y is not None and (t2y - t1y) > 1e-9:
+                    w = max(0.0, min(1.0, (t_poly_years - t1y) / (t2y - t1y)))
+                    total_var = (1 - w) * s1 ** 2 * t1y + w * s2 ** 2 * t2y
+                else:
+                    total_var = s1 ** 2 * t_poly_years
+                eff_sigma = math.sqrt(max(total_var, 0.0) / t_poly_years)
+            elif s1 is not None:
+                eff_sigma = s1
+            elif s2 is not None:
+                eff_sigma = s2
+            else:
+                return None
+
+            if spot <= 0 or k <= 0:
+                return None
+            return round(bsm_call_prob(spot, k, eff_sigma, t_poly_years), 4)
+
+        prob_low = _bsm_prob_from_row(der1, der2, strike)
+        if prob_low is None:
             continue
 
-        interp_w = None
-        if p1 is not None and p2 is not None and t1 and t2 and (t2 - t1).total_seconds() != 0:
-            w = (t_star - t1).total_seconds() / (t2 - t1).total_seconds()
-            w = _clamp01(w)
-            interp_w = round(w, 4)
-            deribit_prob = (1.0 - w) * p1 + w * p2
-        elif p1 is not None:
-            deribit_prob = p1
+        if is_range and strike_high_parsed is not None:
+            # Compute P(S > K_high) via BSM and subtract: P(K_low < S <= K_high) = BSM(K_low) - BSM(K_high)
+            prob_high = _bsm_prob_from_row(der1_high, der2_high, strike_high_parsed)
+            if prob_high is None:
+                prob_high = 1.0 if (spot > 0 and strike_high_parsed < spot) else 0.0
+            deribit_prob = _clamp01(float(prob_low) - float(prob_high))
+        elif is_lt:
+            # P(S < K) = 1 - Delta(K)
+            deribit_prob = _clamp01(1.0 - float(prob_low))
         else:
-            deribit_prob = p2  # type: ignore[assignment]
-
-        if deribit_prob is None:
-            continue
-
-        deribit_prob = _clamp01(float(deribit_prob))
+            deribit_prob = float(prob_low)
         edge_pct = round((deribit_prob - polymarket_price) * 100.0, 2)
         abs_edge_pct = round(abs(edge_pct), 2)
         has_alpha = abs_edge_pct >= float(config.MIN_EDGE_PCT)
 
-        # Deribit spot proxy
-        spot_price = _to_float(der1.get("index_price") if der1 else der2.get("index_price")) if (der1 or der2) else None
-
         liquidity_usd = _to_float(m.get("liquidity_usd")) or 0.0
 
-        instrument_t1_expiry = t1.isoformat() if t1 else None
-        instrument_t2_expiry = t2.isoformat() if t2 else None
+        instrument_t1_expiry = _expiry_str_to_datetime((der1.get("expiry_str") or "")).isoformat() if der1 and der1.get("expiry_str") else None
+        instrument_t2_expiry = _expiry_str_to_datetime((der2.get("expiry_str") or "")).isoformat() if der2 and der2.get("expiry_str") else None
 
         sigma_t1 = None
         sigma_t2 = None

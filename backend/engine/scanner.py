@@ -6,6 +6,7 @@ Deribit expiries, and passes compact context to the LLM agent layer.
 """
 import asyncio
 import json
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -106,36 +107,69 @@ def is_less_than_question(question: str) -> bool:
     return bool(re.search(r"\b(less\s+than|lower\s+than|below|under)\b", ql))
 
 
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF via math.erfc — no external dependency."""
+    return 0.5 * math.erfc(-x / math.sqrt(2))
+
+
+def bsm_call_prob(spot: float, strike: float, sigma: float, t_years: float) -> float:
+    """P(S_T > K) at Polymarket resolution time under log-normal (r=0 approximation).
+
+    For near-expiry crypto options the carry term is negligible, so we use
+    the undiscounted forward (F = S).  sigma is Deribit mark IV (annualised).
+    """
+    if t_years <= 0 or sigma <= 0:
+        return 1.0 if spot > strike else 0.0
+    d1 = (math.log(spot / strike) + 0.5 * sigma ** 2 * t_years) / (sigma * math.sqrt(t_years))
+    return _norm_cdf(d1)
+
+
 def compute_deribit_prob(
     book1: Optional[dict],
     book2: Optional[dict],
-    option_type: str,
+    spot: float,
+    strike: float,
     t_poly_dt: datetime,
     t1_expiry: Optional[datetime],
     t2_expiry: Optional[datetime],
 ) -> Optional[float]:
-    """Compute probability from Deribit delta (delta ≈ P(S>K) for calls)."""
-    def delta_to_prob(delta, otype: str) -> Optional[float]:
-        if delta is None:
+    """Compute P(S > K) at Polymarket resolution time using BSM repriced from Deribit IV.
+
+    When two Deribit expiry brackets are available (T1 <= T_poly <= T2) we
+    interpolate total variance and derive an effective sigma at T_poly, then
+    reprice using Black-Scholes.  This corrects the time-horizon mismatch
+    between Deribit (T_deribit) and Polymarket (T_poly < T_deribit).
+    """
+    now = datetime.now(timezone.utc)
+    t_poly_years = max((t_poly_dt - now).total_seconds(), 60) / 31_536_000  # floor at 1 min
+
+    def _sigma_from_book(book: Optional[dict]) -> Optional[float]:
+        if not book:
             return None
-        d = float(delta)
-        if otype == "C":
-            return max(0.0, min(1.0, d))
-        else:  # Put delta is negative; P(S>K) = 1 + delta_put
-            return max(0.0, min(1.0, 1.0 + d))
+        iv = (book.get("mark_iv") or 0)
+        return float(iv) / 100.0 if iv else None
 
-    prob1 = delta_to_prob(((book1 or {}).get("greeks") or {}).get("delta"), option_type)
-    prob2 = delta_to_prob(((book2 or {}).get("greeks") or {}).get("delta"), option_type)
+    sigma1 = _sigma_from_book(book1)
+    sigma2 = _sigma_from_book(book2)
 
-    if prob1 is not None and prob2 is not None and t1_expiry and t2_expiry:
-        span = (t2_expiry - t1_expiry).total_seconds()
-        if span > 0:
-            w = max(0.0, min(1.0, (t_poly_dt - t1_expiry).total_seconds() / span))
-            return round((1 - w) * prob1 + w * prob2, 4)
-    if prob1 is not None:
-        return round(prob1, 4)
-    if prob2 is not None:
-        return round(prob2, 4)
+    # Interpolate total variance (sigma^2 * T) linearly between the two brackets
+    if sigma1 is not None and sigma2 is not None and t1_expiry and t2_expiry:
+        t1_years = max((t1_expiry - now).total_seconds(), 60) / 31_536_000
+        t2_years = max((t2_expiry - now).total_seconds(), 60) / 31_536_000
+        span = t2_years - t1_years
+        if span > 1e-9:
+            w = max(0.0, min(1.0, (t_poly_years - t1_years) / span))
+            total_var = (1 - w) * sigma1 ** 2 * t1_years + w * sigma2 ** 2 * t2_years
+        else:
+            total_var = sigma1 ** 2 * t_poly_years
+        eff_sigma = math.sqrt(max(total_var, 0.0) / t_poly_years)
+        return round(bsm_call_prob(spot, strike, eff_sigma, t_poly_years), 4)
+
+    # Single bracket: use available sigma directly at T_poly
+    sigma = sigma1 or sigma2
+    if sigma is not None:
+        return round(bsm_call_prob(spot, strike, sigma, t_poly_years), 4)
+
     return None
 
 
@@ -368,18 +402,16 @@ async def scan_once() -> list[dict]:
         if is_range:
             t1_expiry_high = expiry_str_to_datetime(parse_instrument(t1_inst_high["instrument_name"])["expiry_str"]) if t1_inst_high else None
             t2_expiry_high = expiry_str_to_datetime(parse_instrument(t2_inst_high["instrument_name"])["expiry_str"]) if t2_inst_high else None
-            prob_low = compute_deribit_prob(book1, book2, "C", t_poly_dt, t1_expiry, t2_expiry)
-            prob_high = compute_deribit_prob(book1_high, book2_high, "C", t_poly_dt, t1_expiry_high, t2_expiry_high)
+            prob_low = compute_deribit_prob(book1, book2, spot, target_price, t_poly_dt, t1_expiry, t2_expiry)
+            prob_high = compute_deribit_prob(book1_high, book2_high, spot, strike_high, t_poly_dt, t1_expiry_high, t2_expiry_high)
             if prob_low is None:
-                # No K_low instrument: infer delta from moneyness (near-expiry approximation)
                 prob_low = 1.0 if target_price < spot else 0.0
             if prob_high is None:
-                # No K_high instrument: infer delta from moneyness (near-expiry approximation)
                 prob_high = 1.0 if strike_high < spot else 0.0
             deribit_prob = round(max(0.0, min(1.0, prob_low - prob_high)), 4)
         else:
-            deribit_prob = compute_deribit_prob(book1, book2, option_type, t_poly_dt, t1_expiry, t2_expiry)
-            # P(S < K) = 1 - P(S > K) = 1 - Delta(K)
+            deribit_prob = compute_deribit_prob(book1, book2, spot, target_price, t_poly_dt, t1_expiry, t2_expiry)
+            # P(S < K) = 1 - P(S > K)
             if is_less_than and deribit_prob is not None:
                 deribit_prob = round(1.0 - deribit_prob, 4)
         edge_pct = round((float(deribit_prob) - float(poly_price)) * 100, 2) if deribit_prob is not None else None
