@@ -333,16 +333,30 @@ async def _call_openai_json(user_prompt: str) -> tuple[str, dict[str, Any] | Non
         "input": user_prompt,
     }
 
+    max_retries = 3
+    base_delay = 5.0  # seconds
+
     async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            f"{config.OPENAI_BASE_URL}/responses",
-            headers={
-                "Authorization": f"Bearer {config.OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=request_payload,
-        )
-        response.raise_for_status()
+        for attempt in range(max_retries + 1):
+            response = await client.post(
+                f"{config.OPENAI_BASE_URL}/responses",
+                headers={
+                    "Authorization": f"Bearer {config.OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=request_payload,
+            )
+            if response.status_code == 429:
+                if attempt >= max_retries:
+                    response.raise_for_status()
+                retry_after = response.headers.get("Retry-After")
+                delay = float(retry_after) if retry_after else base_delay * (2 ** attempt)
+                print(f"[OpenAI] 429 rate limit — retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(delay)
+                continue
+            response.raise_for_status()
+            break
+
         payload = response.json()
 
     raw_text = _extract_output_text(payload)

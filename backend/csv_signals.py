@@ -283,8 +283,16 @@ def _compute_for_currency(
 
         liquidity_usd = _to_float(m.get("liquidity_usd")) or 0.0
 
-        instrument_t1_expiry = _expiry_str_to_datetime((der1.get("expiry_str") or "")).isoformat() if der1 and der1.get("expiry_str") else None
-        instrument_t2_expiry = _expiry_str_to_datetime((der2.get("expiry_str") or "")).isoformat() if der2 and der2.get("expiry_str") else None
+        t1 = _expiry_str_to_datetime(der1.get("expiry_str") or "") if der1 else None
+        t2 = _expiry_str_to_datetime(der2.get("expiry_str") or "") if der2 else None
+        interp_w = None
+        if t1 and t2:
+            span = (t2 - t1).total_seconds()
+            if span > 0:
+                interp_w = round(max(0.0, min(1.0, (t_star - t1).total_seconds() / span)), 4)
+
+        instrument_t1_expiry = t1.isoformat() if t1 else None
+        instrument_t2_expiry = t2.isoformat() if t2 else None
 
         sigma_t1 = None
         sigma_t2 = None
