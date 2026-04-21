@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import LiveMatrix from './components/LiveMatrix';
 // import ReasoningCards from './components/ReasoningCard';
 import Leaderboard from './components/Leaderboard';
@@ -64,6 +64,7 @@ export default function App() {
   const [signals, setSignals] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
   const [agentSummary, setAgentSummary] = useState(null);
+  const agentSummaryRef = useRef(null);
   const [totalScanned, setTotalScanned] = useState(0);
   const [lastScan, setLastScan] = useState(null);
   const [error, setError] = useState(null);
@@ -103,7 +104,7 @@ export default function App() {
     }));
   };
 
-  /** Load matrix + leaderboard only — called every 30s. Does NOT call AI providers.
+  /** Load matrix + leaderboard only — called on the poll interval. Does NOT call AI providers.
    *  Accepts an optional agentOverride so runFullRefresh can pass the fresh agent
    *  directly without waiting for React state to flush (stale closure fix). */
   const loadFromApi = useCallback(async (agentOverride) => {
@@ -117,7 +118,7 @@ export default function App() {
       const matrix = await matrixRes.json();
       const lb = lbRes.ok ? await lbRes.json() : { entries: [] };
       const polyOnly = (matrix.signals || []).filter(isPolymarketMarketRow);
-      const effectiveAgent = agentOverride !== undefined ? agentOverride : agentSummary;
+      const effectiveAgent = agentOverride !== undefined ? agentOverride : agentSummaryRef.current;
       setSignals(attachAgentAnalysis(polyOnly, effectiveAgent));
       setLeaderboard((lb.entries || []).filter(isPolymarketMarketRow));
       setTotalScanned(polyOnly.length);
@@ -127,7 +128,7 @@ export default function App() {
     } finally {
       setInitialLoading(false);
     }
-  }, [agentSummary]);
+  }, []);  // stable — reads agentSummary via ref to avoid interval restarts
 
   /**
    * Full refresh: live scan + CSV export + AI summary from all providers.
@@ -144,6 +145,7 @@ export default function App() {
       // Call AI providers only on manual refresh
       const agentRes = await fetch(`${API}/agent/summary?limit=22`);
       const agent = agentRes.ok ? await agentRes.json() : null;
+      agentSummaryRef.current = agent;
       setAgentSummary(agent);
       await loadFromApi(agent);
     } catch (e) {
@@ -160,6 +162,7 @@ export default function App() {
       .then(r => r.ok ? r.json() : null)
       .then(agent => {
         if (agent) {
+          agentSummaryRef.current = agent;
           setAgentSummary(agent);
           loadFromApi(agent);
         }
