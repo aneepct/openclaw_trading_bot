@@ -13,7 +13,7 @@ from typing import Optional
 
 from agents.openai_agent import build_agent_signals
 from clients.deribit import get_index_price, get_instruments, get_order_book
-from clients.polymarket import get_daily_event_markets
+from clients.polymarket import get_daily_event_markets, get_yes_clob_token_id, get_market_price
 import memory_store as db_module
 from memory_store import cleanup_old_signals, save_signal
 import config
@@ -313,6 +313,23 @@ async def scan_once() -> list[dict]:
     candidates: list[dict] = []
     poly_markets = await fetch_crypto_price_markets()
 
+    # Fetch live CLOB midpoint prices for all markets in parallel.
+    # These are real-time and more accurate than the cached outcomePrices
+    # returned by the Gamma API.
+    clob_prices: dict[str, float] = {}
+
+    async def _fetch_clob_price(poly: dict) -> None:
+        token_id = get_yes_clob_token_id(poly)
+        if not token_id:
+            return
+        result = await get_market_price(token_id)
+        mid = (result or {}).get("mid")
+        if mid is not None:
+            market_id = poly.get("id") or poly.get("conditionId", "")
+            clob_prices[market_id] = float(mid)
+
+    await asyncio.gather(*[_fetch_clob_price(p) for p in poly_markets])
+
     deribit_instruments: dict[str, list[dict]] = {}
     spot_prices: dict[str, float] = {}
     for currency in config.ASSETS:
@@ -383,7 +400,8 @@ async def scan_once() -> list[dict]:
         if book1 is None and book2 is None:
             continue
 
-        poly_price = extract_polymarket_price(poly)
+        _market_id = poly.get("id") or poly.get("conditionId", "")
+        poly_price = clob_prices.get(_market_id) or extract_polymarket_price(poly)
         if poly_price is None:
             continue
         liquidity = extract_liquidity(poly)

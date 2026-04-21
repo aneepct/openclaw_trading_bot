@@ -1,4 +1,5 @@
 import httpx
+import json
 from datetime import date
 from typing import Optional
 
@@ -59,6 +60,20 @@ async def get_market_by_id(market_id: str) -> Optional[dict]:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.json()
+
+
+def get_yes_clob_token_id(market: dict) -> Optional[str]:
+    """Extract the Yes-outcome CLOB token ID from a Gamma market dict.
+    clobTokenIds follows the same order as outcomes, so index 0 = Yes token.
+    """
+    raw = market.get("clobTokenIds")
+    if not raw:
+        return None
+    try:
+        ids = json.loads(raw) if isinstance(raw, str) else raw
+        return str(ids[0]) if ids else None
+    except Exception:
+        return None
 
 
 async def get_market_price(condition_id: str) -> Optional[dict]:
