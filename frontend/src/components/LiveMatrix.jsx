@@ -80,6 +80,7 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
             <th style={styles.th}>GROK PROBABILITY</th>
             <th style={styles.th}>GEMINI PROBABILITY</th> */}
             <th style={styles.th}>MARKET PRICE</th>
+            <th style={styles.th}>PROFESSIONAL PROBABILITY</th>
             <th style={styles.th}>EDGE</th>
             <th style={styles.th}>REASONING</th>
           </tr>
@@ -124,6 +125,9 @@ export default function LiveMatrix({ signals, totalScanned = 0 }) {
               </td> */}
               <td style={styles.td}>
                 {s.polymarket_price != null ? `${(Number(s.polymarket_price) * 100).toFixed(1)}%` : '—'}
+              </td>
+              <td style={{ ...styles.td, ...styles.prob }}>
+                {s.deribit_prob != null ? `${(Number(s.deribit_prob) * 100).toFixed(1)}%` : '—'}
               </td>
               <td style={{ ...styles.td, ...((s.edge_pct ?? 0) >= 0 ? styles.edgePos : styles.edgeNeg) }}>
                 {s.edge_pct != null ? `${Number(s.edge_pct).toFixed(1)}%` : '—'}
