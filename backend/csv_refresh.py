@@ -10,6 +10,7 @@ from typing import Optional
 import config
 
 from csv_signals import refresh_latest_signals
+from email_sender import collect_csv_paths, send_csv_report
 
 @dataclass
 class CsvRefreshConfig:
@@ -92,6 +93,10 @@ async def export_all_csvs(*, cfg: CsvRefreshConfig) -> None:
 
     # Compute the current signals for the frontend matrix/summary.
     await refresh_latest_signals()
+
+    # Email the freshly produced CSV files.
+    csv_paths = collect_csv_paths(backend_root, cfg.deribit_depth)
+    await asyncio.to_thread(send_csv_report, csv_paths)
 
 
 async def csv_refresh_loop(*, cfg: CsvRefreshConfig) -> None:

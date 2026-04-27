@@ -95,3 +95,17 @@ AGENT_SYSTEM_PROMPT = (
 OPENAI_SYSTEM_PROMPT = _read_provider_prompt("openai") or AGENT_SYSTEM_PROMPT
 GEMINI_SYSTEM_PROMPT = _read_provider_prompt("gemini") or AGENT_SYSTEM_PROMPT
 GROK_SYSTEM_PROMPT   = _read_provider_prompt("grok")   or AGENT_SYSTEM_PROMPT
+
+# ── Email / SMTP ──────────────────────────────────────────────
+EMAIL_HOST          = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT          = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USE_TLS       = os.getenv("EMAIL_USE_TLS", "True").strip().lower() in ("true", "1", "yes")
+EMAIL_HOST_USER     = os.getenv("EMAIL_HOST_USER", "").strip()
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "").strip()
+DEFAULT_FROM_EMAIL  = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER).strip()
+# Comma-separated list of recipient addresses, e.g. "a@x.com,b@x.com"
+EMAIL_RECIPIENTS    = [
+    addr.strip()
+    for addr in os.getenv("EMAIL_RECIPIENT", EMAIL_HOST_USER).split(",")
+    if addr.strip()
+]
