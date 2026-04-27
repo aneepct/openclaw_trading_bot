@@ -22,6 +22,7 @@ from csv_signals import get_latest_signals as get_csv_pipeline_signals
 import config as app_config
 from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
 from csv_refresh import csv_refresh_loop, email_scheduler_loop, export_all_csvs, make_default_cfg
+from email_sender import collect_csv_paths, send_csv_report
 
 _PROVIDER_PROMPT_FILES = {
     "openai": Path(__file__).parent / "prompts" / "openai_system_prompt.txt",
@@ -327,13 +328,17 @@ async def get_agent_summary(limit: int = 22, force: bool = False):
 
 @app.post("/refresh/csv")
 async def trigger_csv_refresh():
-    """Run CSV export scripts and refresh the CSV-derived snapshot (same work as the background loop)."""
+    """Run CSV export scripts, refresh the CSV-derived snapshot, then email all CSVs."""
     cfg = make_default_cfg()
     try:
         await export_all_csvs(cfg=cfg)
     except Exception as e:
         logger.exception("Error in /refresh/csv")
         raise HTTPException(status_code=500, detail=str(e))
+    # Email the freshly generated CSVs
+    backend_root = Path(__file__).resolve().parent
+    csv_paths = collect_csv_paths(backend_root, cfg.deribit_depth)
+    await asyncio.to_thread(send_csv_report, csv_paths)
     return {"ok": True, "refreshed_at": datetime.utcnow().isoformat()}
 
 
