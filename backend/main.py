@@ -21,7 +21,7 @@ from engine.scanner import scan_once, ticker_loop, _scan_lock
 from csv_signals import get_latest_signals as get_csv_pipeline_signals
 import config as app_config
 from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
-from csv_refresh import csv_refresh_loop, export_all_csvs, make_default_cfg
+from csv_refresh import csv_refresh_loop, email_scheduler_loop, export_all_csvs, make_default_cfg
 
 _PROVIDER_PROMPT_FILES = {
     "openai": Path(__file__).parent / "prompts" / "openai_system_prompt.txt",
@@ -54,10 +54,11 @@ def get_latest_signals():
 async def lifespan(app: FastAPI):
     await init_db()
     cfg = make_default_cfg()
-    csv_task = asyncio.create_task(csv_refresh_loop(cfg=cfg))
+    csv_task   = asyncio.create_task(csv_refresh_loop(cfg=cfg))
+    email_task = asyncio.create_task(email_scheduler_loop(cfg=cfg))
     scanner_task = asyncio.create_task(ticker_loop())
     yield
-    for task in (csv_task, scanner_task):
+    for task in (csv_task, email_task, scanner_task):
         task.cancel()
         try:
             await task

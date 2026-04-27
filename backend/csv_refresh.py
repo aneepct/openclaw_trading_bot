@@ -94,10 +94,6 @@ async def export_all_csvs(*, cfg: CsvRefreshConfig) -> None:
     # Compute the current signals for the frontend matrix/summary.
     await refresh_latest_signals()
 
-    # Email the freshly produced CSV files.
-    csv_paths = collect_csv_paths(backend_root, cfg.deribit_depth)
-    await asyncio.to_thread(send_csv_report, csv_paths)
-
 
 async def csv_refresh_loop(*, cfg: CsvRefreshConfig) -> None:
     in_progress = False
@@ -109,6 +105,17 @@ async def csv_refresh_loop(*, cfg: CsvRefreshConfig) -> None:
             finally:
                 in_progress = False
         await asyncio.sleep(cfg.interval_seconds)
+
+
+async def email_scheduler_loop(*, cfg: CsvRefreshConfig) -> None:
+    """Independent loop: collect and email the latest CSVs on a fixed interval."""
+    backend_root = Path(__file__).resolve().parent
+    interval = getattr(config, "EMAIL_INTERVAL_SECONDS", 3600)
+    print(f"[email_scheduler] Starting — will send every {interval}s ({interval / 3600:.2g}h)")
+    while True:
+        await asyncio.sleep(interval)
+        csv_paths = collect_csv_paths(backend_root, cfg.deribit_depth)
+        await asyncio.to_thread(send_csv_report, csv_paths)
 
 
 def make_default_cfg() -> CsvRefreshConfig:

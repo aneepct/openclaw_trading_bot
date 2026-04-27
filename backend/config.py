@@ -109,3 +109,5 @@ EMAIL_RECIPIENTS    = [
     for addr in os.getenv("EMAIL_RECIPIENT", EMAIL_HOST_USER).split(",")
     if addr.strip()
 ]
+EMAIL_INTERVAL_HOURS   = float(os.getenv("EMAIL_INTERVAL_HOURS", "1"))
+EMAIL_INTERVAL_SECONDS = int(round(EMAIL_INTERVAL_HOURS * 3600))
