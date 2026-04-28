@@ -342,7 +342,7 @@ async def trigger_csv_refresh():
     return {"ok": True, "refreshed_at": datetime.utcnow().isoformat()}
 
 
-@app.post("/scan")
+@app.api_route("/scan", methods=["GET", "POST"])
 async def trigger_scan():
     """Run live Deribit + Polymarket API scan (persists to DB). Matrix uses CSV+LLM via /refresh/csv."""
     async with _scan_lock:
