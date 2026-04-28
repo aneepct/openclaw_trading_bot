@@ -399,6 +399,65 @@ async def download_csvs():
     )
 
 
+# ---------------------------------------------------------------------------
+# Individual CSV download endpoints
+# ---------------------------------------------------------------------------
+
+_BACKEND_ROOT = Path(__file__).resolve().parent
+
+_CSV_MAP: dict[str, Path] = {
+    # Deribit
+    "deribit/btc/today":    _BACKEND_ROOT / "deribit_orderbook_data" / "output" / "BTC" / f"order_book_today_depth{app_config.DERIBIT_DEPTH}.csv",
+    "deribit/btc/tomorrow": _BACKEND_ROOT / "deribit_orderbook_data" / "output" / "BTC" / f"order_book_tomorrow_depth{app_config.DERIBIT_DEPTH}.csv",
+    "deribit/eth/today":    _BACKEND_ROOT / "deribit_orderbook_data" / "output" / "ETH" / f"order_book_today_depth{app_config.DERIBIT_DEPTH}.csv",
+    "deribit/eth/tomorrow": _BACKEND_ROOT / "deribit_orderbook_data" / "output" / "ETH" / f"order_book_tomorrow_depth{app_config.DERIBIT_DEPTH}.csv",
+    # Polymarket
+    "polymarket/btc":       _BACKEND_ROOT / "polymarket_markets_export" / "output" / "BTC" / "polymarket_markets_today_utc.csv",
+    "polymarket/eth":       _BACKEND_ROOT / "polymarket_markets_export" / "output" / "ETH" / "polymarket_markets_today_utc.csv",
+}
+
+
+def _serve_csv(path: Path, filename: str) -> StreamingResponse:
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"CSV not yet generated: {filename}")
+    return StreamingResponse(
+        iter([path.read_bytes()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/download/csv/deribit/{asset}/{day}")
+async def download_deribit_csv(asset: str, day: str):
+    """
+    Download a single Deribit order-book CSV.
+
+    asset : btc | eth
+    day   : today | tomorrow
+    """
+    key = f"deribit/{asset.lower()}/{day.lower()}"
+    path = _CSV_MAP.get(key)
+    if path is None:
+        raise HTTPException(status_code=400, detail=f"Unknown combination: asset={asset} day={day}. Use btc/eth and today/tomorrow.")
+    filename = f"deribit_{asset.lower()}_{day.lower()}_depth{app_config.DERIBIT_DEPTH}.csv"
+    return _serve_csv(path, filename)
+
+
+@app.get("/download/csv/polymarket/{asset}")
+async def download_polymarket_csv(asset: str):
+    """
+    Download a single Polymarket markets CSV.
+
+    asset : btc | eth
+    """
+    key = f"polymarket/{asset.lower()}"
+    path = _CSV_MAP.get(key)
+    if path is None:
+        raise HTTPException(status_code=400, detail=f"Unknown asset: {asset}. Use btc or eth.")
+    filename = f"polymarket_{asset.lower()}_today.csv"
+    return _serve_csv(path, filename)
+
+
 @app.get("/health")
 async def health():
     try:
