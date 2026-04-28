@@ -1,6 +1,8 @@
 import asyncio
+import io
 import logging
 import time
+import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -9,6 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -360,6 +363,32 @@ async def trigger_scan():
         "alpha": len(alpha),
         "scanned_at": datetime.utcnow().isoformat(),
     }
+
+
+@app.get("/download/csvs")
+async def download_csvs():
+    """Download all latest Deribit and Polymarket CSV files as a single ZIP archive."""
+    backend_root = Path(__file__).resolve().parent
+    cfg = make_default_cfg()
+    csv_paths = collect_csv_paths(backend_root, cfg.deribit_depth)
+    existing = [(p, name) for p, name in csv_paths if p.exists()]
+    if not existing:
+        raise HTTPException(status_code=404, detail="No CSV files found. Run a refresh first.")
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    zip_filename = f"openclaw_csvs_{today}.zip"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path, name in existing:
+            zf.writestr(name, path.read_bytes())
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+    )
 
 
 @app.get("/health")
