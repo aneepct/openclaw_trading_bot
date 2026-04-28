@@ -367,13 +367,21 @@ async def trigger_scan():
 
 @app.get("/download/csvs")
 async def download_csvs():
-    """Download all latest Deribit and Polymarket CSV files as a single ZIP archive."""
+    """Regenerate all Deribit and Polymarket CSVs, then return them as a single ZIP archive."""
     backend_root = Path(__file__).resolve().parent
     cfg = make_default_cfg()
+
+    # Regenerate fresh data before zipping
+    try:
+        await export_all_csvs(cfg=cfg)
+    except Exception as e:
+        logger.exception("Error regenerating CSVs for download")
+        raise HTTPException(status_code=500, detail=f"CSV regeneration failed: {e}")
+
     csv_paths = collect_csv_paths(backend_root, cfg.deribit_depth)
     existing = [(p, name) for p, name in csv_paths if p.exists()]
     if not existing:
-        raise HTTPException(status_code=404, detail="No CSV files found. Run a refresh first.")
+        raise HTTPException(status_code=404, detail="No CSV files found after regeneration.")
 
     today = datetime.utcnow().strftime("%Y-%m-%d")
     zip_filename = f"openclaw_csvs_{today}.zip"
