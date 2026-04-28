@@ -1,6 +1,8 @@
 import asyncio
 import io
 import logging
+import subprocess
+import sys
 import time
 import zipfile
 from contextlib import asynccontextmanager
@@ -400,7 +402,7 @@ async def download_csvs():
 
 
 # ---------------------------------------------------------------------------
-# Individual CSV download endpoints
+# Individual CSV download endpoints  (always fetch fresh data first)
 # ---------------------------------------------------------------------------
 
 _BACKEND_ROOT = Path(__file__).resolve().parent
@@ -416,10 +418,51 @@ _CSV_MAP: dict[str, Path] = {
     "polymarket/eth":       _BACKEND_ROOT / "polymarket_markets_export" / "output" / "ETH" / "polymarket_markets_today_utc.csv",
 }
 
+# Scripts that regenerate each data source
+_DERIBIT_SCRIPTS: dict[str, Path] = {
+    "btc": _BACKEND_ROOT / "deribit_orderbook_data" / "btc.py",
+    "eth": _BACKEND_ROOT / "deribit_orderbook_data" / "eth.py",
+}
+_POLYMARKET_SCRIPT = _BACKEND_ROOT / "polymarket_markets_export" / "export_markets.py"
+
+
+async def _run_export(script: Path) -> None:
+    """Run an export script in a thread so the event loop stays free."""
+    def _sync() -> None:
+        result = subprocess.run(
+            [sys.executable, str(script), "--depth", str(app_config.DERIBIT_DEPTH), "--max-instruments-per-day", "40"],
+            cwd=str(_BACKEND_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout:
+            logger.info("[csv_export] %s", result.stdout.strip())
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or f"Script exited with code {result.returncode}")
+
+    await asyncio.to_thread(_sync)
+
+
+async def _run_polymarket_export() -> None:
+    """Run the Polymarket export script (no extra CLI args needed)."""
+    def _sync() -> None:
+        result = subprocess.run(
+            [sys.executable, str(_POLYMARKET_SCRIPT)],
+            cwd=str(_BACKEND_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout:
+            logger.info("[csv_export] %s", result.stdout.strip())
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or f"Script exited with code {result.returncode}")
+
+    await asyncio.to_thread(_sync)
+
 
 def _serve_csv(path: Path, filename: str) -> StreamingResponse:
     if not path.exists():
-        raise HTTPException(status_code=404, detail=f"CSV not yet generated: {filename}")
+        raise HTTPException(status_code=404, detail=f"CSV not generated: {filename}")
     return StreamingResponse(
         iter([path.read_bytes()]),
         media_type="text/csv",
@@ -430,31 +473,52 @@ def _serve_csv(path: Path, filename: str) -> StreamingResponse:
 @app.get("/download/csv/deribit/{asset}/{day}")
 async def download_deribit_csv(asset: str, day: str):
     """
-    Download a single Deribit order-book CSV.
+    Fetch the latest Deribit order-book data, then return the CSV.
 
     asset : btc | eth
     day   : today | tomorrow
     """
-    key = f"deribit/{asset.lower()}/{day.lower()}"
+    asset_key = asset.lower()
+    day_key = day.lower()
+    key = f"deribit/{asset_key}/{day_key}"
     path = _CSV_MAP.get(key)
     if path is None:
         raise HTTPException(status_code=400, detail=f"Unknown combination: asset={asset} day={day}. Use btc/eth and today/tomorrow.")
-    filename = f"deribit_{asset.lower()}_{day.lower()}_depth{app_config.DERIBIT_DEPTH}.csv"
+
+    script = _DERIBIT_SCRIPTS.get(asset_key)
+    if script is None:
+        raise HTTPException(status_code=400, detail=f"Unknown asset: {asset}. Use btc or eth.")
+
+    try:
+        await _run_export(script)
+    except Exception as e:
+        logger.exception("Deribit export failed for %s", asset_key)
+        raise HTTPException(status_code=502, detail=f"Deribit export failed: {e}")
+
+    filename = f"deribit_{asset_key}_{day_key}_depth{app_config.DERIBIT_DEPTH}.csv"
     return _serve_csv(path, filename)
 
 
 @app.get("/download/csv/polymarket/{asset}")
 async def download_polymarket_csv(asset: str):
     """
-    Download a single Polymarket markets CSV.
+    Fetch the latest Polymarket markets data, then return the CSV.
 
     asset : btc | eth
     """
-    key = f"polymarket/{asset.lower()}"
+    asset_key = asset.lower()
+    key = f"polymarket/{asset_key}"
     path = _CSV_MAP.get(key)
     if path is None:
         raise HTTPException(status_code=400, detail=f"Unknown asset: {asset}. Use btc or eth.")
-    filename = f"polymarket_{asset.lower()}_today.csv"
+
+    try:
+        await _run_polymarket_export()
+    except Exception as e:
+        logger.exception("Polymarket export failed for %s", asset_key)
+        raise HTTPException(status_code=502, detail=f"Polymarket export failed: {e}")
+
+    filename = f"polymarket_{asset_key}_today.csv"
     return _serve_csv(path, filename)
 
 
