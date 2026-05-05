@@ -87,10 +87,13 @@ def derive_api_credentials() -> dict:
     ClobClient = _import_clob()[0]
 
     # L1 client — no credentials yet, used only to derive them.
+    # use_server_time=True fetches the CLOB server timestamp before signing,
+    # avoiding "invalid signature" errors caused by local clock skew.
     l1_client = ClobClient(
         host="https://clob.polymarket.com",
         chain_id=chain_id,
         key=private_key,
+        use_server_time=True,
     )
 
     creds = l1_client.create_or_derive_api_key()
@@ -113,6 +116,9 @@ def build_authed_client():
         "key": private_key,
         "creds": creds,
         "signature_type": sig_type,
+        # Must use server time so every order signature uses Polymarket's
+        # clock, not the container's — prevents "invalid signature" rejections.
+        "use_server_time": True,
     }
     if funder_address:
         kwargs["funder"] = funder_address
