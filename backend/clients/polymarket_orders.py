@@ -167,9 +167,11 @@ def derive_api_credentials():
     return creds
 
 
-def build_authed_client():
+def build_authed_client(sig_type_override: int = None):
     """Return an L2-authenticated ClobClient ready for order placement."""
     private_key, funder_address, chain_id, sig_type = _get_config()
+    if sig_type_override is not None:
+        sig_type = sig_type_override
     ClobClient = _import_clob()[0]
     creds = derive_api_credentials()
 
@@ -185,6 +187,71 @@ def build_authed_client():
         kwargs["funder"] = funder_address
 
     return ClobClient(**kwargs)
+
+
+def diagnose_wallet() -> dict:
+    """Return diagnostic info about the configured wallet without placing orders.
+
+    Checks:
+    - EOA address derived from the private key
+    - Configured funder address and signature type
+    - Whether credentials can be derived (L1 auth)
+    - Which balance endpoint responds (confirms L2 auth + correct funder)
+    """
+    from eth_account import Account as _Account
+
+    private_key, funder_address, chain_id, sig_type = _get_config()
+    if not private_key:
+        return {"error": "POLYMARKET_PRIVATE_KEY is not set"}
+
+    eoa_address = _Account.from_key(private_key).address
+    result: dict = {
+        "eoa_address":      eoa_address,
+        "funder_address":   funder_address or "(not set — will use EOA)",
+        "chain_id":         chain_id,
+        "signature_type":   sig_type,
+        "sig_type_note":    {0: "EOA", 1: "POLY_PROXY (Magic Link)", 2: "GNOSIS_SAFE"}.get(sig_type, str(sig_type)),
+        "eoa_equals_funder": (funder_address or "").lower() == eoa_address.lower(),
+        "auth_test":        None,
+        "balance_test":     None,
+        "recommendation":   None,
+    }
+
+    # Test L1 auth
+    try:
+        creds = derive_api_credentials()
+        result["auth_test"] = f"OK — apiKey prefix: {str(creds.api_key)[:8]}…"
+    except Exception as exc:
+        result["auth_test"] = f"FAILED: {exc}"
+        return result
+
+    # Test each signature type against the balance endpoint (lightweight)
+    working_types = []
+    for try_type in (0, 1, 2):
+        try:
+            client = build_authed_client(sig_type_override=try_type)
+            balance_resp = client.get_balance_allowance()  # L2 authenticated call, no order
+            if balance_resp is not None:
+                working_types.append(try_type)
+                result[f"type_{try_type}_balance"] = "OK"
+        except Exception as exc:
+            result[f"type_{try_type}_balance"] = f"FAILED: {str(exc)[:80]}"
+
+    type_names = {0: "EOA", 1: "POLY_PROXY", 2: "GNOSIS_SAFE"}
+    if working_types:
+        result["balance_test"] = f"Working types: {[type_names[t] for t in working_types]}"
+        result["recommendation"] = (
+            f"Set POLYMARKET_SIGNATURE_TYPE={working_types[0]} "
+            f"({type_names[working_types[0]]}) in docker-compose.yml and .env"
+        )
+    else:
+        result["balance_test"] = "All types failed — check funder address and private key"
+        result["recommendation"] = (
+            "Verify POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER_ADDRESS are correct. "
+            "The funder should be the address shown on polymarket.com, not the signing key address."
+        )
+
+    return result
 
 
 async def create_order(
