@@ -581,11 +581,11 @@ async def authenticate_polymarket():
     """
     try:
         creds = await asyncio.to_thread(derive_api_credentials)
-        # Return only the apiKey prefix — never expose the secret/passphrase.
-        api_key = creds.get("apiKey", "")
+        # ApiCreds is an object — access via attributes, not dict .get()
+        api_key = getattr(creds, "api_key", "") or getattr(creds, "apiKey", "")
         return {
             "ok": True,
-            "apiKey_prefix": api_key[:8] + "…" if api_key else "",
+            "apiKey_prefix": str(api_key)[:8] + "…" if api_key else "",
             "message": "Credentials derived successfully and cached in-process.",
         }
     except RuntimeError as e:

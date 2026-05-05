@@ -84,7 +84,6 @@ def derive_api_credentials() -> dict:
             "Set it in your .env file or environment to enable order placement."
         )
 
-    ClobClient, *_ = _import_clob()[0:1], *_import_clob()[1:]
     ClobClient = _import_clob()[0]
 
     # L1 client — no credentials yet, used only to derive them.
@@ -95,7 +94,9 @@ def derive_api_credentials() -> dict:
     )
 
     creds = l1_client.create_or_derive_api_key()
-    logger.info("Polymarket API credentials derived (apiKey=%s…)", str(creds.get("apiKey", ""))[:8])
+    # ApiCreds is an object — access via attributes, not dict .get()
+    api_key_val = getattr(creds, "api_key", "") or getattr(creds, "apiKey", "")
+    logger.info("Polymarket API credentials derived (apiKey=%s…)", str(api_key_val)[:8])
     _cached_creds = creds
     return creds
 
