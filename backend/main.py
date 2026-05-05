@@ -664,3 +664,56 @@ async def get_order_token(market_id: str):
         "token_id": token_id,
         "question": market.get("question"),
     }
+
+
+@app.get("/orders/tokens")
+async def list_clob_tokens():
+    """Return Yes-outcome CLOB token IDs for all BTC and ETH daily price markets fetched today.
+
+    Calls the same ``fetch_crypto_price_markets()`` used by the scanner so the
+    list is always in sync with what the engine is tracking.
+
+    Response shape:
+    ```json
+    {
+      "date": "2026-05-05",
+      "tokens": [
+        {
+          "currency": "BTC",
+          "market_id": "0x...",
+          "token_id": "71321...",
+          "question": "Will BTC be above $95000 on May 5?"
+        },
+        ...
+      ],
+      "total": 22
+    }
+    ```
+    """
+    from engine.scanner import fetch_crypto_price_markets
+    from clients.polymarket import get_yes_clob_token_id as _get_token
+
+    try:
+        markets = await fetch_crypto_price_markets()
+    except Exception as e:
+        logger.exception("Error fetching markets for /orders/tokens")
+        raise HTTPException(status_code=502, detail=f"Polymarket fetch failed: {e}")
+
+    tokens = []
+    for m in markets:
+        token_id = _get_token(m)
+        if not token_id:
+            continue
+        tokens.append({
+            "currency": m.get("_currency"),
+            "market_id": m.get("id") or m.get("conditionId", ""),
+            "token_id": token_id,
+            "question": m.get("question"),
+        })
+
+    from datetime import date
+    return {
+        "date": date.today().isoformat(),
+        "tokens": tokens,
+        "total": len(tokens),
+    }
