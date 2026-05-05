@@ -111,3 +111,11 @@ EMAIL_RECIPIENTS    = [
 ]
 EMAIL_INTERVAL_HOURS   = float(os.getenv("EMAIL_INTERVAL_HOURS", "1"))
 EMAIL_INTERVAL_SECONDS = int(round(EMAIL_INTERVAL_HOURS * 3600))
+
+# ── Polymarket order execution (CLOB) ─────────────────────────────────────────
+POLYMARKET_PRIVATE_KEY   = os.getenv("POLYMARKET_PRIVATE_KEY", "").strip()
+POLYMARKET_FUNDER_ADDRESS = os.getenv("POLYMARKET_FUNDER_ADDRESS", "").strip()
+# Polygon mainnet chain ID (137). Override only for testnet/debugging.
+POLYMARKET_CHAIN_ID      = int(os.getenv("POLYMARKET_CHAIN_ID", "137"))
+# Signature type: 0 = EOA, 1 = gnosis safe / magic-link proxy wallet.
+POLYMARKET_SIGNATURE_TYPE = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "0"))

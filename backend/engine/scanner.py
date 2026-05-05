@@ -317,15 +317,17 @@ async def scan_once() -> list[dict]:
     # These are real-time and more accurate than the cached outcomePrices
     # returned by the Gamma API.
     clob_prices: dict[str, float] = {}
+    clob_token_ids: dict[str, str] = {}
 
     async def _fetch_clob_price(poly: dict) -> None:
         token_id = get_yes_clob_token_id(poly)
         if not token_id:
             return
+        market_id = poly.get("id") or poly.get("conditionId", "")
+        clob_token_ids[market_id] = token_id
         result = await get_market_price(token_id)
         mid = (result or {}).get("mid")
         if mid is not None:
-            market_id = poly.get("id") or poly.get("conditionId", "")
             clob_prices[market_id] = float(mid)
 
     await asyncio.gather(*[_fetch_clob_price(p) for p in poly_markets])
@@ -478,6 +480,7 @@ async def scan_once() -> list[dict]:
                 "abs_edge_pct": abs_edge_pct,
                 "has_alpha": has_alpha,
                 "liquidity_usd": round(liquidity, 2),
+                "yes_clob_token_id": clob_token_ids.get(poly.get("id") or poly.get("conditionId", "")),
                 "t1_book": {
                     "mark_iv": (book1 or {}).get("mark_iv"),
                     "delta": ((book1 or {}).get("greeks") or {}).get("delta"),

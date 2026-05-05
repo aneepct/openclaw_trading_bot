@@ -534,3 +534,133 @@ async def health():
     except Exception as e:
         logger.exception("Error in /health")
         return {"status": "error", "detail": str(e), "timestamp": datetime.utcnow().isoformat()}
+
+
+# ---------------------------------------------------------------------------
+# Polymarket order execution endpoints
+# ---------------------------------------------------------------------------
+
+from clients.polymarket_orders import build_authed_client, create_order, derive_api_credentials  # noqa: E402
+
+
+class OrderRequest(BaseModel):
+    """Request body for POST /orders."""
+
+    token_id: str
+    """CLOB token ID for the Yes outcome — use get_yes_clob_token_id() to obtain it."""
+
+    price: float
+    """Limit price in USDC (0 < price < 1).  e.g. 0.65 means 65¢."""
+
+    size: float
+    """Order size in USDC.  e.g. 100 means $100 notional."""
+
+    side: str
+    """Trade direction: ``"BUY"`` or ``"SELL"``."""
+
+    tick_size: str = "0.01"
+    """Minimum price increment for this market (default ``"0.01"``)."""
+
+    neg_risk: bool = False
+    """Set ``True`` only for negative-risk markets (uncommon)."""
+
+
+@app.post("/orders/auth")
+async def authenticate_polymarket():
+    """Derive or create Polymarket L2 API credentials from the configured wallet.
+
+    This endpoint contacts the CLOB server to derive API credentials from the
+    wallet private key set in ``POLYMARKET_PRIVATE_KEY``.  Credentials are
+    cached in-process for the lifetime of the server; calling this endpoint
+    more than once returns the cached result.
+
+    **Required env var:** ``POLYMARKET_PRIVATE_KEY``
+
+    Returns the ``apiKey`` (truncated for security), confirming that the
+    wallet is authorised for L2 order methods.
+    """
+    try:
+        creds = await asyncio.to_thread(derive_api_credentials)
+        # Return only the apiKey prefix — never expose the secret/passphrase.
+        api_key = creds.get("apiKey", "")
+        return {
+            "ok": True,
+            "apiKey_prefix": api_key[:8] + "…" if api_key else "",
+            "message": "Credentials derived successfully and cached in-process.",
+        }
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /orders/auth")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/orders")
+async def place_order(payload: OrderRequest):
+    """Place a BUY or SELL order on the Polymarket CLOB.
+
+    The ``token_id`` is the Yes-outcome CLOB token for a market.  Obtain it
+    via ``GET /orders/token/{market_id}`` or directly from
+    ``get_yes_clob_token_id(market)``.
+
+    **Required env vars:** ``POLYMARKET_PRIVATE_KEY``,
+    optionally ``POLYMARKET_FUNDER_ADDRESS``.
+
+    Request body example:
+    ```json
+    {
+      "token_id": "71321045679252212594626385532706912750332728571942532289631379312455583992563",
+      "price": 0.65,
+      "size": 100,
+      "side": "BUY"
+    }
+    ```
+    """
+    try:
+        result = await create_order(
+            token_id=payload.token_id,
+            price=payload.price,
+            size=payload.size,
+            side=payload.side,
+            tick_size=payload.tick_size,
+            neg_risk=payload.neg_risk,
+        )
+        return {"ok": True, "order": result}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in POST /orders")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/orders/token/{market_id}")
+async def get_order_token(market_id: str):
+    """Look up the Yes-outcome CLOB token ID for a Polymarket market.
+
+    ``market_id`` is the condition ID (hex string) of the market, as returned
+    by the Gamma API and stored in scanner signals as ``polymarket_market_id``.
+
+    Returns ``token_id`` which can be passed directly to ``POST /orders``.
+    """
+    from clients.polymarket import get_market_by_id, get_yes_clob_token_id
+
+    try:
+        market = await get_market_by_id(market_id)
+    except Exception as e:
+        logger.exception("Error fetching market %s", market_id)
+        raise HTTPException(status_code=502, detail=f"Gamma API error: {e}")
+
+    if not market:
+        raise HTTPException(status_code=404, detail=f"Market not found: {market_id}")
+
+    token_id = get_yes_clob_token_id(market)
+    if not token_id:
+        raise HTTPException(status_code=404, detail="No CLOB token IDs found for this market.")
+
+    return {
+        "market_id": market_id,
+        "token_id": token_id,
+        "question": market.get("question"),
+    }
