@@ -706,7 +706,9 @@ async def list_clob_tokens():
             continue
         tokens.append({
             "currency": m.get("_currency"),
+            "market_name": m.get("_event_title") or m.get("groupItemTitle") or m.get("question"),
             "market_id": m.get("id") or m.get("conditionId", ""),
+            "event_slug": m.get("_event_slug"),
             "token_id": token_id,
             "question": m.get("question"),
         })

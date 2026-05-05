@@ -292,11 +292,17 @@ async def fetch_crypto_price_markets() -> list[dict]:
     """Fetch today's daily price markets directly from Polymarket event slugs.
     e.g. bitcoin-price-on-april-7, ethereum-price-on-april-7
     Guarantees exactly the right daily markets (11 BTC + 11 ETH).
+
+    Date logic mirrors the CSV export:
+    - Before 16:00 UTC → use today's event slug
+    - At/after 16:00 UTC → use tomorrow's slug (today's markets have settled)
     """
-    today = datetime.now(timezone.utc).date()
+    now = datetime.now(timezone.utc)
+    from datetime import timedelta
+    scan_date = (now + timedelta(days=1)).date() if now.hour >= 16 else now.date()
     results = []
     for currency in config.ASSETS:
-        markets = await get_daily_event_markets(currency, today)
+        markets = await get_daily_event_markets(currency, scan_date)
         for market in markets:
             question = market.get("question", "")
             target_price, target_price_high = extract_price_range_from_question(question)

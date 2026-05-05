@@ -33,8 +33,12 @@ async def get_daily_event_markets(currency: str, target_date: date) -> list[dict
         resp.raise_for_status()
         event = resp.json()
         markets = event.get("markets") or []
+        event_title = event.get("title") or event.get("name", "")
+        event_slug = event.get("slug", slug)
         for m in markets:
             m["_currency"] = currency
+            m["_event_title"] = event_title
+            m["_event_slug"] = event_slug
         return markets
 
 
