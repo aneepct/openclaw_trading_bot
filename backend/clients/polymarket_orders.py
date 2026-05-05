@@ -30,7 +30,6 @@ from typing import Optional
 
 import httpx
 from eth_account import Account
-from eth_account.messages import encode_typed_data
 
 logger = logging.getLogger(__name__)
 
@@ -90,45 +89,37 @@ def _get_server_timestamp() -> int:
 def _build_eip712_l1_headers(private_key: str, chain_id: int, nonce: int = 0) -> dict:
     """Build POLY_* L1 authentication headers by signing EIP-712 typed data directly.
 
-    Follows the exact Polymarket auth spec:
-    https://docs.polymarket.com/api-reference/authentication#eip-712-signing-example
+    Uses Account.sign_typed_data (eth-account >= 0.9.0 / the version shipped
+    with py-clob-client-v2) which is the correct high-level API for EIP-712.
     """
     account = Account.from_key(private_key)
     address  = account.address
     ts       = _get_server_timestamp()
 
-    # EIP-712 typed data per Polymarket spec
-    typed_data = {
-        "types": {
-            "EIP712Domain": [
-                {"name": "name",    "type": "string"},
-                {"name": "version", "type": "string"},
-                {"name": "chainId", "type": "uint256"},
-            ],
+    signed = Account.sign_typed_data(
+        private_key=private_key,
+        domain_data={
+            "name":    _DOMAIN_NAME,
+            "version": _DOMAIN_VERSION,
+            "chainId": chain_id,
+        },
+        message_types={
             "ClobAuth": [
                 {"name": "address",   "type": "address"},
                 {"name": "timestamp", "type": "string"},
                 {"name": "nonce",     "type": "uint256"},
                 {"name": "message",   "type": "string"},
-            ],
+            ]
         },
-        "primaryType": "ClobAuth",
-        "domain": {
-            "name":    _DOMAIN_NAME,
-            "version": _DOMAIN_VERSION,
-            "chainId": chain_id,
-        },
-        "message": {
+        message_data={
             "address":   address,
             "timestamp": str(ts),
             "nonce":     nonce,
             "message":   _AUTH_MESSAGE,
         },
-    }
+    )
 
-    signable = encode_typed_data(full_message=typed_data)
-    signed   = Account.sign_message(signable, private_key=private_key)
-    sig_hex  = signed.signature.hex()
+    sig_hex = signed.signature.hex()
     if not sig_hex.startswith("0x"):
         sig_hex = "0x" + sig_hex
 
