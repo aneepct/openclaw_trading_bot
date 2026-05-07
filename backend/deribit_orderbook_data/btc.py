@@ -6,13 +6,11 @@ from pathlib import Path
 import sys
 from typing import Any
 
-import httpx
-
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from clients.deribit import BASE_URL
+from clients.deribit import DeribitWSClient
 from deribit_orderbook_data.util import (
     build_arg_parser,
     deribit_expiry_str_from_date,
@@ -24,20 +22,16 @@ from deribit_orderbook_data.util import (
 
 
 async def _fetch_order_book(
-    client: httpx.AsyncClient,
+    ws: DeribitWSClient,
     *,
     instrument_name: str,
     depth: int,
-    sem: asyncio.Semaphore,
 ) -> tuple[str, dict[str, Any] | None]:
-    async with sem:
-        resp = await client.get(
-            f"{BASE_URL}/get_order_book",
-            params={"instrument_name": instrument_name, "depth": depth},
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        return instrument_name, payload.get("result")
+    result = await ws.call(
+        "public/get_order_book",
+        {"instrument_name": instrument_name, "depth": depth},
+    )
+    return instrument_name, result if isinstance(result, dict) else None
 
 
 async def main() -> None:
@@ -50,24 +44,14 @@ async def main() -> None:
     output_root = Path(args.output_dir) / currency
     now = datetime.now(timezone.utc).isoformat()
 
-    # Deribit endpoints
-    instruments_url = f"{BASE_URL}/get_instruments"
-    index_url = f"{BASE_URL}/get_index_price"
+    async with DeribitWSClient() as ws:
+        instruments = await ws.call(
+            "public/get_instruments",
+            {"currency": currency, "kind": "option", "expired": False},
+        ) or []
 
-    sem = asyncio.Semaphore(10)  # cap in-flight order book requests
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        inst_resp = await client.get(
-            instruments_url,
-            params={"currency": currency, "kind": "option", "expired": "false"},
-        )
-        inst_resp.raise_for_status()
-        instruments = inst_resp.json().get("result", [])
-
-        idx_resp = await client.get(index_url, params={"index_name": index_name})
-        idx_resp.raise_for_status()
-        index_payload = idx_resp.json().get("result", {}) or {}
-        index_price = index_payload.get("index_price")
+        index_result = await ws.call("public/get_index_price", {"index_name": index_name})
+        index_price = (index_result or {}).get("index_price")
 
         expiry_today = utc_date(0)
         expiry_tomorrow = utc_date(1)
@@ -111,10 +95,9 @@ async def main() -> None:
 
             tasks = [
                 _fetch_order_book(
-                    client,
+                    ws,
                     instrument_name=name,
                     depth=args.depth,
-                    sem=sem,
                 )
                 for name in expiry_instruments
             ]

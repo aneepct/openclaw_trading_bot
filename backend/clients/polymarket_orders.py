@@ -42,9 +42,9 @@ _cached_creds = None
 
 def _import_clob():
     try:
-        from py_clob_client_v2 import ClobClient, OrderArgs, PartialCreateOrderOptions  # type: ignore
+        from py_clob_client_v2 import ClobClient, OrderArgs, OrderType, PartialCreateOrderOptions  # type: ignore
         from py_clob_client_v2.order_builder.constants import BUY, SELL  # type: ignore
-        return ClobClient, OrderArgs, PartialCreateOrderOptions, BUY, SELL
+        return ClobClient, OrderArgs, OrderType, PartialCreateOrderOptions, BUY, SELL
     except ImportError as exc:
         raise RuntimeError(
             "py-clob-client-v2 is not installed. Add it to requirements.txt and rebuild."
@@ -66,6 +66,7 @@ def _get_config():
         app_config.POLYMARKET_FUNDER_ADDRESS,
         app_config.POLYMARKET_CHAIN_ID,
         app_config.POLYMARKET_SIGNATURE_TYPE,
+        app_config.POLYMARKET_BUILDER_CODE,
     )
 
 
@@ -138,7 +139,7 @@ def derive_api_credentials():
     if _cached_creds is not None:
         return _cached_creds
 
-    private_key, _funder, chain_id, _ = _get_config()
+    private_key, _funder, chain_id, _, _bc = _get_config()
     if not private_key:
         raise RuntimeError(
             "POLYMARKET_PRIVATE_KEY is not set. "
@@ -169,7 +170,7 @@ def derive_api_credentials():
 
 def build_authed_client(sig_type_override: int = None):
     """Return an L2-authenticated ClobClient ready for order placement."""
-    private_key, funder_address, chain_id, sig_type = _get_config()
+    private_key, funder_address, chain_id, sig_type, _ = _get_config()
     if sig_type_override is not None:
         sig_type = sig_type_override
     ClobClient = _import_clob()[0]
@@ -200,7 +201,7 @@ def diagnose_wallet() -> dict:
     """
     from eth_account import Account as _Account
 
-    private_key, funder_address, chain_id, sig_type = _get_config()
+    private_key, funder_address, chain_id, sig_type, _ = _get_config()
     if not private_key:
         return {"error": "POLYMARKET_PRIVATE_KEY is not set"}
 
@@ -226,11 +227,14 @@ def diagnose_wallet() -> dict:
         return result
 
     # Test each signature type against the balance endpoint (lightweight)
+    from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType  # type: ignore
     working_types = []
-    for try_type in (0, 1, 2):
+    for try_type in (1, 0, 2):
         try:
             client = build_authed_client(sig_type_override=try_type)
-            balance_resp = client.get_balance_allowance()  # L2 authenticated call, no order
+            balance_resp = client.get_balance_allowance(
+                params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=try_type)
+            )
             if balance_resp is not None:
                 working_types.append(try_type)
                 result[f"type_{try_type}_balance"] = "OK"
@@ -280,21 +284,27 @@ async def create_order(
     if size <= 0:
         raise ValueError(f"size must be positive, got {size}")
 
-    ClobClient, OrderArgs, PartialCreateOrderOptions, BUY, SELL = _import_clob()
+    ClobClient, OrderArgs, OrderType, PartialCreateOrderOptions, BUY, SELL = _import_clob()
     order_side = BUY if side_upper == "BUY" else SELL
+    _, _, _, _, builder_code = _get_config()
     client = build_authed_client()
 
     def _place() -> dict:
         global _cached_creds
         try:
+            order_args_kwargs = dict(
+                token_id=token_id,
+                price=price,
+                size=size,
+                side=order_side,
+            )
+            if builder_code:
+                order_args_kwargs["builder_code"] = builder_code
             return client.create_and_post_order(
-                OrderArgs(
-                    token_id=token_id,
-                    price=price,
-                    size=size,
-                    side=order_side,
-                ),
+                order_args=OrderArgs(**order_args_kwargs),
+
                 options=PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),
+                order_type=OrderType.GTC,
             )
         except Exception as exc:
             # Clear credential cache on signature rejection so next call re-derives.

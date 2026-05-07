@@ -540,7 +540,7 @@ async def health():
 # Polymarket order execution endpoints
 # ---------------------------------------------------------------------------
 
-from clients.polymarket_orders import build_authed_client, create_order, derive_api_credentials  # noqa: E402
+from clients.polymarket_orders import build_authed_client, create_order, derive_api_credentials, diagnose_wallet  # noqa: E402
 
 
 class OrderRequest(BaseModel):
@@ -592,6 +592,25 @@ async def authenticate_polymarket():
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.exception("Error in /orders/auth")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/orders/diagnose")
+async def diagnose_orders():
+    """Diagnose the configured Polymarket wallet.
+
+    Tests L1 auth and then probes the balance endpoint with all three signature
+    types (EOA=0, POLY_PROXY=1, GNOSIS_SAFE=2) to find which one works.
+
+    Returns the EOA address derived from ``POLYMARKET_PRIVATE_KEY``, the
+    configured funder address, and a recommendation for
+    ``POLYMARKET_SIGNATURE_TYPE``.
+    """
+    try:
+        result = await asyncio.to_thread(diagnose_wallet)
+        return result
+    except Exception as e:
+        logger.exception("Error in /orders/diagnose")
         raise HTTPException(status_code=500, detail=str(e))
 
 

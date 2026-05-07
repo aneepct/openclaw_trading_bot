@@ -80,6 +80,7 @@ GEMINI_BASE_URL = (
 ).rstrip("/")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
 AGENT_TOP_N_SIGNALS = int(os.getenv("AGENT_TOP_N_SIGNALS", "5"))
+AGENT_ENABLED = os.getenv("AGENT_ENABLED", "true").strip().lower() not in ("0", "false", "no")
 _DEFAULT_SYSTEM_PROMPT = (
     "You are the trading agent. Treat Deribit as the professional "
     "probability surface and Polymarket as the retail market to compare against. "
@@ -119,3 +120,5 @@ POLYMARKET_FUNDER_ADDRESS = os.getenv("POLYMARKET_FUNDER_ADDRESS", "").strip()
 POLYMARKET_CHAIN_ID      = int(os.getenv("POLYMARKET_CHAIN_ID", "137"))
 # Signature type: 0 = EOA, 1 = gnosis safe / magic-link proxy wallet.
 POLYMARKET_SIGNATURE_TYPE = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "0"))
+# Builder code for registered Polymarket builders (leave empty for regular users).
+POLYMARKET_BUILDER_CODE  = os.getenv("POLYMARKET_BUILDER_CODE", "").strip()

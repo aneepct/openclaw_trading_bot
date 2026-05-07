@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import re
@@ -399,6 +401,14 @@ async def build_agent_signals(candidates: list[dict[str, Any]]) -> tuple[list[di
     if not candidates:
         return [], {
             "summary": "No eligible market contexts were available for the agent.",
+            "structural_insight": "",
+            "updated_summary": "",
+            "source": "scanner",
+        }
+
+    if not config.AGENT_ENABLED:
+        return _scanner_fallback_signals(candidates), {
+            "summary": "Agent disabled — showing Deribit delta probabilities directly.",
             "structural_insight": "",
             "updated_summary": "",
             "source": "scanner",

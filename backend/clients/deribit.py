@@ -1,11 +1,84 @@
-import httpx
 import asyncio
-from typing import Optional
+import itertools
+import json
+from typing import Any, Optional
+
+import httpx
+import websockets
 
 BASE_URL = "https://www.deribit.com/api/v2/public"
+DERIBIT_WSS_URL = "wss://www.deribit.com/ws/api/v2"
 
-# Cap concurrent order-book fetches to avoid hitting Deribit's rate limit
+# Cap concurrent order-book fetches to avoid hitting Deribit's rate limit (HTTP fallback)
 _DERIBIT_SEMAPHORE = asyncio.Semaphore(3)
+_req_id = itertools.count(1)
+
+
+class DeribitWSClient:
+    """
+    Single WebSocket connection to Deribit public API.
+    All JSON-RPC calls share one connection, eliminating per-request HTTP
+    overhead and 429 rate-limit errors.
+    """
+
+    def __init__(self) -> None:
+        self._ws: Any = None
+        self._pending: dict[int, asyncio.Future] = {}
+        self._reader_task: asyncio.Task | None = None
+
+    async def __aenter__(self) -> "DeribitWSClient":
+        self._ws = await websockets.connect(DERIBIT_WSS_URL, ping_interval=20)
+        self._reader_task = asyncio.create_task(self._reader())
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        if self._reader_task:
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except asyncio.CancelledError:
+                pass
+        if self._ws:
+            await self._ws.close()
+
+    async def _reader(self) -> None:
+        """Read incoming messages and resolve the matching pending future."""
+        try:
+            async for raw in self._ws:
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                req_id = msg.get("id")
+                if req_id is not None and req_id in self._pending:
+                    fut = self._pending.pop(req_id)
+                    if not fut.done():
+                        if "error" in msg:
+                            fut.set_exception(RuntimeError(str(msg["error"])))
+                        else:
+                            fut.set_result(msg.get("result"))
+        except Exception as exc:
+            # Connection dropped — reject every pending call
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(exc)
+            self._pending.clear()
+
+    async def call(self, method: str, params: dict[str, Any]) -> Any:
+        """Send a public JSON-RPC request and return its result."""
+        req_id = next(_req_id)
+        payload = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": method,
+            "params": params,
+        }
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._pending[req_id] = fut
+        await self._ws.send(json.dumps(payload))
+        return await fut
+
 
 
 async def get_instruments(currency: str = "BTC", kind: str = "option") -> list[dict]:
