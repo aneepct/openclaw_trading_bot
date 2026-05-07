@@ -21,10 +21,14 @@ class DeribitWSClient:
     overhead and 429 rate-limit errors.
     """
 
+    # Deribit allows ~20 non-auth WS requests/sec; cap in-flight to stay safe.
+    _CONCURRENCY = 8
+
     def __init__(self) -> None:
         self._ws: Any = None
         self._pending: dict[int, asyncio.Future] = {}
         self._reader_task: asyncio.Task | None = None
+        self._sem = asyncio.Semaphore(self._CONCURRENCY)
 
     async def __aenter__(self) -> "DeribitWSClient":
         self._ws = await websockets.connect(DERIBIT_WSS_URL, ping_interval=20)
@@ -64,20 +68,37 @@ class DeribitWSClient:
                     fut.set_exception(exc)
             self._pending.clear()
 
-    async def call(self, method: str, params: dict[str, Any]) -> Any:
-        """Send a public JSON-RPC request and return its result."""
-        req_id = next(_req_id)
-        payload = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": method,
-            "params": params,
-        }
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future = loop.create_future()
-        self._pending[req_id] = fut
-        await self._ws.send(json.dumps(payload))
-        return await fut
+    async def call(self, method: str, params: dict[str, Any], *, _retries: int = 5) -> Any:
+        """Send a public JSON-RPC request and return its result.
+
+        Automatically retries on Deribit error 10028 (too_many_requests) with
+        exponential backoff so callers never need to handle rate-limit errors.
+        """
+        backoff = 2.0
+        for attempt in range(_retries + 1):
+            async with self._sem:
+                req_id = next(_req_id)
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": method,
+                    "params": params,
+                }
+                loop = asyncio.get_running_loop()
+                fut: asyncio.Future = loop.create_future()
+                self._pending[req_id] = fut
+                await self._ws.send(json.dumps(payload))
+            try:
+                return await fut
+            except RuntimeError as exc:
+                raw = str(exc)
+                # Deribit returns {"code": 10028, "message": "too_many_requests"}
+                if "10028" in raw and attempt < _retries:
+                    print(f"[DeribitWS] rate limited on {method}, retrying in {backoff:.1f}s (attempt {attempt + 1}/{_retries})")
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
+                    continue
+                raise
 
 
 
