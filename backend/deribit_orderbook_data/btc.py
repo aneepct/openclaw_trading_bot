@@ -13,9 +13,8 @@ if str(BACKEND_ROOT) not in sys.path:
 from clients.deribit import DeribitWSClient
 from deribit_orderbook_data.util import (
     build_arg_parser,
-    deribit_expiry_str_from_date,
+    next_available_expiries,
     parse_instrument_name,
-    utc_date,
     write_csv,
     write_json,
 )
@@ -53,14 +52,10 @@ async def main() -> None:
         index_result = await ws.call("public/get_index_price", {"index_name": index_name})
         index_price = (index_result or {}).get("index_price")
 
-        expiry_today = utc_date(0)
-        expiry_tomorrow = utc_date(1)
-        expiry_map = {
-            "today": deribit_expiry_str_from_date(expiry_today),
-            "tomorrow": deribit_expiry_str_from_date(expiry_tomorrow),
-        }
+        available = next_available_expiries(instruments, currency, count=2)
+        expiry_map = {"today": available[0], "tomorrow": available[1]}
         if getattr(args, "only_today", False):
-            expiry_map = {"today": expiry_map["today"]}
+            expiry_map = {"today": available[0]}
 
         for day_label, expiry_str in expiry_map.items():
             expiry_instruments: list[str] = []

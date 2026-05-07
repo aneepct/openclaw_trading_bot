@@ -44,6 +44,41 @@ def parse_instrument_name(instrument_name: str) -> dict[str, Any]:
     return out
 
 
+def next_available_expiries(
+    instruments: list[dict[str, Any]],
+    currency: str,
+    *,
+    count: int = 2,
+) -> list[str]:
+    """
+    Return the `count` soonest expiry strings that have active instruments for
+    `currency`, sorted by calendar date.  Falls back to the wall-clock
+    today/tomorrow strings when the instrument list is empty.
+    """
+    seen: set[str] = set()
+    dated: list[tuple[datetime, str]] = []
+    for inst in instruments:
+        name = inst.get("instrument_name") or ""
+        meta = parse_instrument_name(name)
+        if meta.get("currency") != currency:
+            continue
+        expiry_str = meta.get("expiry_str") or ""
+        if not expiry_str or expiry_str in seen:
+            continue
+        seen.add(expiry_str)
+        try:
+            dt = datetime.strptime(expiry_str.upper(), "%d%b%y").replace(tzinfo=timezone.utc)
+            dated.append((dt, expiry_str))
+        except ValueError:
+            continue
+    dated.sort(key=lambda x: x[0])
+    result = [expiry_str for _, expiry_str in dated[:count]]
+    # Pad with wall-clock fallbacks if fewer than `count` expiries were found
+    for i in range(len(result), count):
+        result.append(deribit_expiry_str_from_date(utc_date(i)))
+    return result
+
+
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
