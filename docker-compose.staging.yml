@@ -1,5 +1,5 @@
 services:
-  backend:
+  backend-staging:
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -39,7 +39,7 @@ services:
       retries: 3
       start_period: 40s
 
-  frontend:
+  frontend-staging:
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -50,5 +50,5 @@ services:
     ports:
       - "3001:3000"
     depends_on:
-      backend:
+      backend-staging:
         condition: service_healthy
