@@ -1,0 +1,54 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: trading_backend_staging
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-mini}
+      - OPENAI_REASONING_EFFORT=${OPENAI_REASONING_EFFORT:-low}
+      - GROK_API_KEY=${GROK_API_KEY}
+      - GROK_MODEL=${GROK_MODEL:-grok-3-mini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - OPENCLAW_AGENT_SYSTEM_PROMPT=${OPENCLAW_AGENT_SYSTEM_PROMPT:-}
+      - EMAIL_HOST=${EMAIL_HOST:-smtp.gmail.com}
+      - EMAIL_PORT=${EMAIL_PORT:-587}
+      - EMAIL_USE_TLS=${EMAIL_USE_TLS:-True}
+      - EMAIL_HOST_USER=${EMAIL_HOST_USER}
+      - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
+      - DEFAULT_FROM_EMAIL=${DEFAULT_FROM_EMAIL}
+      - EMAIL_RECIPIENT=${EMAIL_RECIPIENT}
+      - EMAIL_INTERVAL_HOURS=${EMAIL_INTERVAL_HOURS:-1}
+      - AGENT_ENABLED=${AGENT_ENABLED:-false}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8001}
+    container_name: trading_frontend_staging
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
