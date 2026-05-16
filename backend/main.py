@@ -534,3 +534,130 @@ async def health():
     except Exception as e:
         logger.exception("Error in /health")
         return {"status": "error", "detail": str(e), "timestamp": datetime.utcnow().isoformat()}
+
+
+# ---------------------------------------------------------------------------
+# Polymarket trading endpoints
+# ---------------------------------------------------------------------------
+
+from clients.polymarket_trading import (
+    fetch_positions as _pm_fetch_positions,
+    fetch_open_orders as _pm_fetch_open_orders,
+    create_order as _pm_create_order,
+    close_position as _pm_close_position,
+    get_balance as _pm_get_balance,
+)
+
+
+class CreateOrderRequest(BaseModel):
+    token_id: str
+    price: float
+    size: float
+    side: str  # "BUY" or "SELL"
+
+
+class ClosePositionRequest(BaseModel):
+    token_id: str
+    size: float
+    price: float
+
+
+@app.get("/polymarket/positions")
+async def list_positions(open_only: bool = True):
+    """
+    Return Polymarket positions for the configured funder wallet.
+
+    Query params:
+    - open_only (default true): exclude resolved/redeemable positions.
+    """
+    try:
+        positions = await asyncio.to_thread(_pm_fetch_positions, open_only)
+        balance   = await asyncio.to_thread(_pm_get_balance)
+        return {
+            "positions": positions,
+            "total": len(positions),
+            "balance_usdc": balance,
+        }
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/positions")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/polymarket/orders")
+async def place_order(payload: CreateOrderRequest):
+    """
+    Place a GTC limit order on Polymarket.
+
+    Body (JSON):
+    ```json
+    {
+      "token_id": "<CLOB token ID>",
+      "price":    0.65,
+      "size":     10.0,
+      "side":     "BUY"
+    }
+    ```
+    `side` must be `"BUY"` or `"SELL"`.
+    `price` must be between 0 and 1 (exclusive).
+    """
+    try:
+        resp = await asyncio.to_thread(
+            _pm_create_order,
+            payload.token_id,
+            payload.price,
+            payload.size,
+            payload.side,
+        )
+        success = resp.get("success", False)
+        if not success:
+            raise HTTPException(status_code=400, detail=resp.get("errorMsg", "Order rejected by CLOB"))
+        return {"ok": True, "order_id": resp.get("orderID"), "response": resp}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/orders")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/polymarket/orders/close")
+async def close_position(payload: ClosePositionRequest):
+    """
+    Sell (close) an existing position on Polymarket.
+
+    Body (JSON):
+    ```json
+    {
+      "token_id": "<CLOB token ID>",
+      "size":     10.0,
+      "price":    0.64
+    }
+    ```
+    Places a GTC SELL limit order for `size` shares at `price`.
+    Use a price slightly below the current market price for a quick fill.
+    """
+    try:
+        resp = await asyncio.to_thread(
+            _pm_close_position,
+            payload.token_id,
+            payload.size,
+            payload.price,
+        )
+        success = resp.get("success", False)
+        if not success:
+            raise HTTPException(status_code=400, detail=resp.get("errorMsg", "Order rejected by CLOB"))
+        return {"ok": True, "order_id": resp.get("orderID"), "response": resp}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/orders/close")
+        raise HTTPException(status_code=500, detail=str(e))
