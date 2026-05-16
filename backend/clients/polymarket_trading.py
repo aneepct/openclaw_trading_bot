@@ -2,6 +2,7 @@
 Polymarket trading client — wraps py_clob_client_v2 for use by the FastAPI routes.
 Credentials are read from config (env vars POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER).
 """
+import json
 import httpx
 from functools import lru_cache
 
@@ -123,6 +124,88 @@ def close_position(token_id: str, size: float, price: float) -> dict:
         The CLOB API response dict.
     """
     return create_order(token_id=token_id, price=price, size=size, side="SELL")
+
+
+# ---------------------------------------------------------------------------
+# Resolve market slug → token IDs + metadata
+# ---------------------------------------------------------------------------
+
+def resolve_market_slug(slug: str) -> list[dict]:
+    """
+    Fetch market info for a given Polymarket slug from the Gamma API.
+
+    Tries the /markets/slug/{slug} endpoint first; falls back to
+    /events/slug/{slug} and extracts the nested markets array.
+
+    Args:
+        slug: URL slug, e.g. "will-the-price-of-bitcoin-be-less-than-72000-on-may-17"
+
+    Returns:
+        List of dicts, one per outcome, each with:
+            - token_id:  CLOB token ID (use this in create_order / close_position)
+            - question:  market question string
+            - outcome:   outcome label (e.g. "Yes" / "No")
+            - tick_size: minimum price increment
+            - min_size:  minimum order size
+            - condition_id: on-chain condition ID
+    """
+    gamma = app_config.POLYMARKET_BASE_URL  # https://gamma-api.polymarket.com
+
+    # ── Try /markets/slug/{slug} first ────────────────────────────────────────
+    r = httpx.get(f"{gamma}/markets/slug/{slug}", timeout=10)
+    if r.status_code == 200:
+        raw = r.json()
+        # Endpoint may return a single dict or a list
+        markets_raw = raw if isinstance(raw, list) else [raw]
+        result = []
+        for m in markets_raw:
+            ids = m.get("clobTokenIds") or []
+            if isinstance(ids, str):
+                ids = json.loads(ids)
+            outcomes = m.get("outcomes") or []
+            if isinstance(outcomes, str):
+                outcomes = json.loads(outcomes)
+            for i, token_id in enumerate(ids):
+                result.append({
+                    "token_id":     str(token_id),
+                    "question":     m.get("question", slug),
+                    "outcome":      outcomes[i] if i < len(outcomes) else f"outcome_{i}",
+                    "tick_size":    float(m.get("minTickSize") or 0.01),
+                    "min_size":     float(m.get("orderMinSize") or 5),
+                    "condition_id": m.get("conditionId", ""),
+                })
+        if result:
+            return result
+
+    # ── Fallback: /events/slug/{slug} ─────────────────────────────────────────
+    r2 = httpx.get(f"{gamma}/events/slug/{slug}", timeout=10)
+    if r2.status_code != 200:
+        raise ValueError(
+            f"Market slug '{slug}' not found "
+            f"(markets→{r.status_code}, events→{r2.status_code})."
+        )
+    event = r2.json()
+    markets_raw = event.get("markets", [])
+    result = []
+    for m in markets_raw:
+        ids = m.get("clobTokenIds") or []
+        if isinstance(ids, str):
+            ids = json.loads(ids)
+        outcomes = m.get("outcomes") or []
+        if isinstance(outcomes, str):
+            outcomes = json.loads(outcomes)
+        for i, token_id in enumerate(ids):
+            result.append({
+                "token_id":     str(token_id),
+                "question":     m.get("question", slug),
+                "outcome":      outcomes[i] if i < len(outcomes) else f"outcome_{i}",
+                "tick_size":    float(m.get("minTickSize") or 0.01),
+                "min_size":     float(m.get("orderMinSize") or 5),
+                "condition_id": m.get("conditionId", ""),
+            })
+    if not result:
+        raise ValueError(f"No markets found for slug '{slug}'.")
+    return result
 
 
 # ---------------------------------------------------------------------------

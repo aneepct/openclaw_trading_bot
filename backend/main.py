@@ -562,6 +562,7 @@ from clients.polymarket_trading import (
     create_order as _pm_create_order,
     close_position as _pm_close_position,
     get_balance as _pm_get_balance,
+    resolve_market_slug as _pm_resolve_slug,
 )
 
 
@@ -576,6 +577,33 @@ class ClosePositionRequest(BaseModel):
     token_id: str
     size: float
     price: float
+
+
+@app.get("/polymarket/market/{slug}", dependencies=[Security(_require_api_key)])
+async def get_market_by_slug(slug: str):
+    """
+    Resolve a Polymarket market slug to its CLOB token IDs and metadata.
+
+    Path param:
+    - slug: the market slug, e.g.
+      `will-the-price-of-bitcoin-be-less-than-72000-on-may-17`
+
+    Returns one entry per outcome (typically YES and NO), each with:
+    - token_id    — use this in POST /polymarket/orders or /polymarket/orders/close
+    - question    — market question
+    - outcome     — outcome label ("Yes" / "No")
+    - tick_size   — minimum price increment
+    - min_size    — minimum order size in shares
+    - condition_id
+    """
+    try:
+        markets = await asyncio.to_thread(_pm_resolve_slug, slug)
+        return {"slug": slug, "markets": markets, "total": len(markets)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/market/%s", slug)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/polymarket/positions", dependencies=[Security(_require_api_key)])
