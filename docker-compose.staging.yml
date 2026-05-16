@@ -26,6 +26,11 @@ services:
       - EMAIL_RECIPIENT=${EMAIL_RECIPIENT}
       - EMAIL_INTERVAL_HOURS=${EMAIL_INTERVAL_HOURS:-1}
       - AGENT_ENABLED=${AGENT_ENABLED:-false}
+      - POLYMARKET_PRIVATE_KEY=${POLYMARKET_PRIVATE_KEY}
+      - POLYMARKET_FUNDER=${POLYMARKET_FUNDER}
+      - POLYMARKET_API_KEY=${POLYMARKET_API_KEY}
+      - POLYMARKET_CLOB_API=${POLYMARKET_CLOB_API:-https://clob.polymarket.com}
+      - POLYMARKET_DATA_API=${POLYMARKET_DATA_API:-https://data-api.polymarket.com}
     healthcheck:
       test:
         [
