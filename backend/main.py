@@ -11,9 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -540,6 +541,21 @@ async def health():
 # Polymarket trading endpoints
 # ---------------------------------------------------------------------------
 
+_api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
+
+
+async def _require_api_key(api_key: str | None = Security(_api_key_header)):
+    """Dependency: reject requests that don't supply the correct x-api-key header."""
+    expected = app_config.POLYMARKET_API_KEY
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="POLYMARKET_API_KEY is not configured on the server.",
+        )
+    if api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing x-api-key.")
+
+
 from clients.polymarket_trading import (
     fetch_positions as _pm_fetch_positions,
     fetch_open_orders as _pm_fetch_open_orders,
@@ -562,7 +578,7 @@ class ClosePositionRequest(BaseModel):
     price: float
 
 
-@app.get("/polymarket/positions")
+@app.get("/polymarket/positions", dependencies=[Security(_require_api_key)])
 async def list_positions(open_only: bool = True):
     """
     Return Polymarket positions for the configured funder wallet.
@@ -585,7 +601,7 @@ async def list_positions(open_only: bool = True):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/polymarket/orders")
+@app.post("/polymarket/orders", dependencies=[Security(_require_api_key)])
 async def place_order(payload: CreateOrderRequest):
     """
     Place a GTC limit order on Polymarket.
@@ -625,7 +641,7 @@ async def place_order(payload: CreateOrderRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/polymarket/orders/close")
+@app.post("/polymarket/orders/close", dependencies=[Security(_require_api_key)])
 async def close_position(payload: ClosePositionRequest):
     """
     Sell (close) an existing position on Polymarket.
