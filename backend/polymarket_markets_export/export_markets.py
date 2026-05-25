@@ -168,6 +168,10 @@ CURRENCY_SLUGS = {
     "ETH": "ethereum",
 }
 
+# ---------------------------------------------------------------------------
+# Slug builders
+# ---------------------------------------------------------------------------
+
 FIELDNAMES = [
     "snapshot_at",
     "market_id",
@@ -183,11 +187,16 @@ FIELDNAMES = [
 
 
 def build_daily_slug(currency: str, target_date) -> str:
-    """e.g. BTC + April 6 -> 'bitcoin-price-on-april-6'"""
+    """
+    Build the Polymarket event slug for a daily price event.
+    Format: {asset}-price-on-{month}-{day}-{year}
+    e.g. BTC + May 25 2026 -> 'bitcoin-price-on-may-25-2026'
+    """
     asset = CURRENCY_SLUGS.get(currency, currency.lower())
     month = target_date.strftime("%B").lower()
     day = str(target_date.day)
-    return f"{asset}-price-on-{month}-{day}"
+    year = str(target_date.year)
+    return f"{asset}-price-on-{month}-{day}-{year}"
 
 
 async def fetch_event_markets(client: httpx.AsyncClient, slug: str) -> list[dict[str, Any]]:
@@ -213,42 +222,50 @@ async def main() -> None:
     rows_by_currency: dict[str, list[dict[str, Any]]] = {"BTC": [], "ETH": []}
     combined_rows: list[dict[str, Any]] = []
 
-    # If today's 16:00 UTC settlement has already passed, scan tomorrow instead
+    # Scan both today and tomorrow so we always return the freshest available data.
+    # Markets for today are still live until they resolve at 16:00 UTC; after that
+    # they are filtered below by poly_resolution_time(end_date) < now.
     tomorrow = (now + timedelta(days=1)).date()
-    scan_date = tomorrow if now.hour >= 16 else today
+    scan_dates = [today, tomorrow]
 
     async with httpx.AsyncClient(timeout=20) as client:
         for currency in ("BTC", "ETH"):
-            slug = build_daily_slug(currency, scan_date)
-            markets = await fetch_event_markets(client, slug)
-            print(f"[{currency}] slug={slug} → {len(markets)} markets")
+            seen_ids: set[str] = set()
+            for scan_date in scan_dates:
+                slug = build_daily_slug(currency, scan_date)
+                markets = await fetch_event_markets(client, slug)
+                print(f"[{currency}] slug={slug} → {len(markets)} markets")
 
-            for market in markets:
-                question = market.get("question") or ""
-                end_date = extract_end_date(market)
-                if not end_date:
-                    continue
-                if poly_resolution_time(end_date) < now:
-                    continue
+                for market in markets:
+                    mid = str(market.get("id") or market.get("conditionId") or "")
+                    if mid in seen_ids:
+                        continue
+                    question = market.get("question") or ""
+                    end_date = extract_end_date(market)
+                    if not end_date:
+                        continue
+                    if poly_resolution_time(end_date) < now:
+                        continue
 
-                outcome0_scaled = extract_outcome_prices0_scaled(market)
-                if outcome0_scaled is None:
-                    continue
+                    outcome0_scaled = extract_outcome_prices0_scaled(market)
+                    if outcome0_scaled is None:
+                        continue
 
-                row = {
-                    "snapshot_at": now.isoformat(),
-                    "market_id": market.get("id") or market.get("conditionId") or "",
-                    "polymarket_question": question,
-                    "currency": currency,
-                    "option_type": detect_option_type(question),
-                    "target_price_from_question": extract_price_from_question(question),
-                    "end_date_iso": end_date.isoformat(),
-                    "liquidity_usd": extract_liquidity(market),
-                    "outcomePrices_0_scaled": outcome0_scaled,
-                    "outcomePrices_0_raw": extract_outcome_prices0_raw(market),
-                }
-                rows_by_currency[currency].append(row)
-                combined_rows.append(row)
+                    seen_ids.add(mid)
+                    row = {
+                        "snapshot_at": now.isoformat(),
+                        "market_id": mid,
+                        "polymarket_question": question,
+                        "currency": currency,
+                        "option_type": detect_option_type(question),
+                        "target_price_from_question": extract_price_from_question(question),
+                        "end_date_iso": end_date.isoformat(),
+                        "liquidity_usd": extract_liquidity(market),
+                        "outcomePrices_0_scaled": outcome0_scaled,
+                        "outcomePrices_0_raw": extract_outcome_prices0_raw(market),
+                    }
+                    rows_by_currency[currency].append(row)
+                    combined_rows.append(row)
 
     btc_rows = rows_by_currency["BTC"]
     eth_rows = rows_by_currency["ETH"]
