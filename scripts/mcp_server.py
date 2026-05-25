@@ -398,6 +398,27 @@ def update_closing_order(
     return f"✗ Update failed: {json.dumps(resp, indent=2)}"
 
 
+@mcp.tool()
+def cancel_polymarket_order(order_id: str) -> str:
+    """
+    Cancel an open Polymarket order by its order ID.
+
+    Args:
+        order_id: The order ID to cancel (from a previous order confirmation).
+
+    Returns:
+        Confirmation that the order was cancelled, or an error message.
+    """
+    resp = _delete_json(f"/polymarket/orders/{order_id}")
+    if resp.get("ok") or resp.get("cancelled"):
+        return (
+            f"✓ Order cancelled successfully!\n"
+            f"Order ID: {order_id}\n"
+            f"Full response: {json.dumps(resp, indent=2)}"
+        )
+    return f"✗ Cancel failed: {json.dumps(resp, indent=2)}"
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
