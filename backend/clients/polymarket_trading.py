@@ -142,11 +142,14 @@ def cancel_order(order_id: str) -> dict:
         The CLOB API response dict.
     """
     client = _get_client()
-    headers = client._l2_headers("DELETE", "/order")
-    r = httpx.delete(
+    body = {"orderID": order_id}
+    headers = client._l2_headers("DELETE", "/order", body=body)
+    headers["Content-Type"] = "application/json"
+    r = httpx.request(
+        "DELETE",
         f"{app_config.POLYMARKET_CLOB_API}/order",
         headers=headers,
-        json={"orderID": order_id},
+        content=json.dumps(body),
         timeout=10,
     )
     r.raise_for_status()
