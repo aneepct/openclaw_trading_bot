@@ -50,15 +50,24 @@ except ImportError:
     pass
 
 OPENCLAW_API_URL = os.getenv("OPENCLAW_API_URL", "http://localhost:8000").rstrip("/")
+POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "")
 
 mcp = FastMCP("OpenClaw Trading Bot")
+
+
+def _headers() -> dict:
+    """Build request headers, including x-api-key if configured."""
+    h = {}
+    if POLYMARKET_API_KEY:
+        h["x-api-key"] = POLYMARKET_API_KEY
+    return h
 
 
 def _get(path: str, timeout: int = 90) -> str:
     """Make a GET request to the OpenClaw API and return text content."""
     url = f"{OPENCLAW_API_URL}{path}"
     with httpx.Client(timeout=timeout) as client:
-        r = client.get(url)
+        r = client.get(url, headers=_headers())
     r.raise_for_status()
     return r.text
 
@@ -66,6 +75,24 @@ def _get(path: str, timeout: int = 90) -> str:
 def _get_json(path: str, timeout: int = 90) -> dict:
     """Make a GET request and return parsed JSON."""
     return json.loads(_get(path, timeout))
+
+
+def _post_json(path: str, body: dict, timeout: int = 90) -> dict:
+    """Make a POST request with a JSON body and return parsed JSON."""
+    url = f"{OPENCLAW_API_URL}{path}"
+    with httpx.Client(timeout=timeout) as client:
+        r = client.post(url, json=body, headers=_headers())
+    r.raise_for_status()
+    return r.json()
+
+
+def _delete_json(path: str, timeout: int = 90) -> dict:
+    """Make a DELETE request to the OpenClaw API and return parsed JSON."""
+    url = f"{OPENCLAW_API_URL}{path}"
+    with httpx.Client(timeout=timeout) as client:
+        r = client.delete(url, headers=_headers())
+    r.raise_for_status()
+    return r.json() if r.content else {}
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +211,191 @@ def get_health() -> str:
     """Check if the OpenClaw API is running and how many signals are loaded."""
     data = _get_json("/health")
     return json.dumps(data, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Polymarket trading tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_polymarket_market_info(slug: str) -> str:
+    """
+    Get Polymarket market info and token IDs for a given market slug.
+    Call this BEFORE placing an order to get the correct token_id.
+
+    Args:
+        slug: The market URL slug, e.g.
+              "will-the-price-of-bitcoin-be-between-76000-78000-on-may-17"
+
+    Returns:
+        JSON with token_id, question, outcome (Yes/No), tick_size, min_size
+        for each outcome in the market.
+    """
+    data = _get_json(f"/polymarket/market/{slug}")
+    markets = data.get("markets", [])
+    if not markets:
+        return f"No market found for slug: {slug}"
+    lines = [f"Market slug: {slug}", f"Outcomes ({len(markets)}):\n"]
+    for m in markets:
+        lines.append(f"  Outcome  : {m.get('outcome')}")
+        lines.append(f"  token_id : {m.get('token_id')}")
+        lines.append(f"  Question : {m.get('question')}")
+        lines.append(f"  Tick size: {m.get('tick_size')}  Min size: {m.get('min_size')}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def create_polymarket_order(
+    token_id: str,
+    price: float,
+    size: float,
+    side: str,
+    close_pct: float = None,
+) -> str:
+    """
+    Place a GTC limit order on Polymarket.
+    Get the token_id first using get_polymarket_market_info().
+
+    Args:
+        token_id:  CLOB token ID for the outcome (from get_polymarket_market_info).
+        price:     Limit price between 0 and 1 (e.g. 0.65 = 65 cents).
+        size:      Number of shares to buy/sell (minimum is usually 5).
+        side:      "BUY" or "SELL".
+        close_pct: Optional. If provided, also place a SELL limit order at
+                   price * (1 + close_pct / 100).  E.g. close_pct=10 places
+                   a take-profit sell 10% above the buy price.
+                   Ignored when side="SELL".
+
+    Returns:
+        Order confirmation with order_id if successful. If close_pct is given,
+        also returns the sell order ID.
+    """
+    resp = _post_json("/polymarket/orders", {
+        "token_id": token_id,
+        "price": price,
+        "size": size,
+        "side": side.upper(),
+    })
+    if not resp.get("ok"):
+        return f"✗ Order failed: {json.dumps(resp, indent=2)}"
+
+    lines = [
+        f"✓ Order placed successfully!",
+        f"Order ID: {resp.get('order_id')}",
+        f"Full response: {json.dumps(resp.get('response', {}), indent=2)}",
+    ]
+
+    # Optionally place a take-profit sell order
+    if close_pct is not None and side.upper() == "BUY":
+        sell_price = round(price * (1 + close_pct / 100), 4)
+        # Clamp to valid range
+        sell_price = min(max(sell_price, 0.0001), 0.9999)
+        sell_resp = _post_json("/polymarket/orders", {
+            "token_id": token_id,
+            "price": sell_price,
+            "size": size,
+            "side": "SELL",
+        })
+        if sell_resp.get("ok"):
+            lines.append(f"\n✓ Take-profit SELL order placed at {sell_price} ({close_pct}% above buy price)")
+            lines.append(f"Sell Order ID: {sell_resp.get('order_id')}")
+        else:
+            lines.append(f"\n✗ Take-profit SELL order failed: {json.dumps(sell_resp, indent=2)}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def close_polymarket_position(token_id: str, size: float, price: float) -> str:
+    """
+    Close (sell) an existing Polymarket position.
+    Places a GTC SELL limit order for the specified size at the given price.
+    Use a price slightly below the current market price for a quick fill.
+
+    Args:
+        token_id: CLOB token ID of the position to close.
+        size:     Number of shares to sell.
+        price:    Sell limit price between 0 and 1.
+
+    Returns:
+        Order confirmation with order_id if successful.
+    """
+    resp = _post_json("/polymarket/orders/close", {
+        "token_id": token_id,
+        "size": size,
+        "price": price,
+    })
+    if resp.get("ok"):
+        return f"✓ Close order placed successfully!\nOrder ID: {resp.get('order_id')}\nFull response: {json.dumps(resp.get('response', {}), indent=2)}"
+    return f"✗ Close order failed: {json.dumps(resp, indent=2)}"
+
+
+@mcp.tool()
+def get_polymarket_positions() -> str:
+    """
+    Get all open Polymarket positions for the configured account.
+    Returns market title, size, average price, current price, and P&L.
+    """
+    data = _get_json("/polymarket/positions")
+    positions = data.get("positions", [])
+    balance = data.get("balance_usdc", 0)
+
+    if not positions:
+        return f"No open positions.\nBalance: ${balance:.4f} USDC"
+
+    lines = [f"Balance: ${balance:.4f} USDC", f"Open positions ({len(positions)}):\n"]
+    for i, p in enumerate(positions):
+        pnl = float(p.get("cashPnl", 0))
+        lines.append(f"  [{i}] {p.get('title', '?')}")
+        lines.append(f"       token_id : {p.get('asset', '?')}")
+        lines.append(f"       Size: {p.get('size')}  Avg: ${float(p.get('avgPrice', 0)):.3f}  Cur: ${float(p.get('curPrice', 0)):.3f}  P&L: ${pnl:+.3f}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def update_closing_order(
+    order_id: str,
+    token_id: str,
+    size: float,
+    new_close_pct: float,
+    buy_price: float,
+) -> str:
+    """
+    Cancel an existing sell limit order and replace it with a new one at an updated price.
+
+    Use this to adjust a take-profit sell order placed alongside a buy.
+
+    Args:
+        order_id:      The sell order ID to cancel (from the original order confirmation).
+        token_id:      CLOB token ID of the outcome being sold.
+        size:          Number of shares for the new sell order.
+        new_close_pct: New take-profit percentage above buy_price.
+                       E.g. 15 means sell at buy_price * 1.15.
+        buy_price:     The original buy price used as the base for percentage calculation.
+
+    Returns:
+        Confirmation with the cancelled order ID and new sell order ID.
+    """
+    new_price = round(buy_price * (1 + new_close_pct / 100), 4)
+    new_price = min(max(new_price, 0.0001), 0.9999)
+
+    resp = _post_json("/polymarket/orders/update-close", {
+        "order_id": order_id,
+        "token_id": token_id,
+        "size": size,
+        "new_price": new_price,
+    })
+    if resp.get("ok"):
+        return (
+            f"✓ Closing order updated!\n"
+            f"Cancelled Order ID : {resp.get('cancelled_order_id')}\n"
+            f"New Sell Order ID  : {resp.get('new_order_id')}\n"
+            f"New sell price     : {new_price} ({new_close_pct}% above {buy_price})\n"
+            f"Full response: {json.dumps(resp.get('response', {}), indent=2)}"
+        )
+    return f"✗ Update failed: {json.dumps(resp, indent=2)}"
 
 
 # ---------------------------------------------------------------------------

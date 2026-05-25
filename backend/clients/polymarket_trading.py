@@ -127,6 +127,33 @@ def close_position(token_id: str, size: float, price: float) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Cancel order
+# ---------------------------------------------------------------------------
+
+def cancel_order(order_id: str) -> dict:
+    """
+    Cancel a resting limit order by its order ID.
+
+    Uses the same L2 authentication as fetch_open_orders.
+
+    Args:
+        order_id: The order ID returned when the order was placed.
+    Returns:
+        The CLOB API response dict.
+    """
+    client = _get_client()
+    headers = client._l2_headers("DELETE", "/order")
+    r = httpx.delete(
+        f"{app_config.POLYMARKET_CLOB_API}/order",
+        headers=headers,
+        json={"orderID": order_id},
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json() if r.content else {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
 # Resolve market slug → token IDs + metadata
 # ---------------------------------------------------------------------------
 

@@ -561,6 +561,7 @@ from clients.polymarket_trading import (
     fetch_open_orders as _pm_fetch_open_orders,
     create_order as _pm_create_order,
     close_position as _pm_close_position,
+    cancel_order as _pm_cancel_order,
     get_balance as _pm_get_balance,
     resolve_market_slug as _pm_resolve_slug,
 )
@@ -577,6 +578,17 @@ class ClosePositionRequest(BaseModel):
     token_id: str
     size: float
     price: float
+
+
+class CancelOrderRequest(BaseModel):
+    order_id: str
+
+
+class UpdateClosingOrderRequest(BaseModel):
+    order_id: str      # existing sell order to cancel
+    token_id: str      # token to re-sell
+    size: float        # number of shares
+    new_price: float   # new sell limit price (0 < price < 1)
 
 
 @app.get("/polymarket/market/{slug}", dependencies=[Security(_require_api_key)])
@@ -704,4 +716,68 @@ async def close_position(payload: ClosePositionRequest):
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.exception("Error in /polymarket/orders/close")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/polymarket/orders/{order_id}", dependencies=[Security(_require_api_key)])
+async def cancel_order(order_id: str):
+    """
+    Cancel a resting limit order by its order ID.
+
+    Uses L2 (POLY_*) authentication — same credentials as order creation.
+    """
+    try:
+        resp = await asyncio.to_thread(_pm_cancel_order, order_id)
+        return {"ok": True, "order_id": order_id, "response": resp}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in DELETE /polymarket/orders/%s", order_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/polymarket/orders/update-close", dependencies=[Security(_require_api_key)])
+async def update_closing_order(payload: UpdateClosingOrderRequest):
+    """
+    Cancel an existing sell limit order and replace it with a new one at a different price.
+
+    Body (JSON):
+    ```json
+    {
+      "order_id":  "<existing sell order ID to cancel>",
+      "token_id":  "<CLOB token ID>",
+      "size":      10.0,
+      "new_price": 0.72
+    }
+    ```
+    """
+    try:
+        # Step 1 — cancel the old sell order
+        await asyncio.to_thread(_pm_cancel_order, payload.order_id)
+
+        # Step 2 — place a new sell order at the updated price
+        resp = await asyncio.to_thread(
+            _pm_create_order,
+            payload.token_id,
+            payload.new_price,
+            payload.size,
+            "SELL",
+        )
+        success = resp.get("success", False)
+        if not success:
+            raise HTTPException(status_code=400, detail=resp.get("errorMsg", "New sell order rejected by CLOB"))
+        return {
+            "ok": True,
+            "cancelled_order_id": payload.order_id,
+            "new_order_id": resp.get("orderID"),
+            "response": resp,
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/orders/update-close")
         raise HTTPException(status_code=500, detail=str(e))
