@@ -62,12 +62,13 @@ def get_latest_signals():
 async def lifespan(app: FastAPI):
     await init_db()
     cfg = make_default_cfg()
-    csv_task        = asyncio.create_task(csv_refresh_loop(cfg=cfg))
-    email_task      = asyncio.create_task(email_scheduler_loop(cfg=cfg))
-    scanner_task    = asyncio.create_task(ticker_loop())
-    auto_trade_task = asyncio.create_task(auto_trader_loop())
+    csv_task         = asyncio.create_task(csv_refresh_loop(cfg=cfg))
+    email_task       = asyncio.create_task(email_scheduler_loop(cfg=cfg))
+    scanner_task     = asyncio.create_task(ticker_loop())
+    auto_trade_btc   = asyncio.create_task(auto_trader_loop("BTC"))
+    auto_trade_eth   = asyncio.create_task(auto_trader_loop("ETH"))
     yield
-    for task in (csv_task, email_task, scanner_task, auto_trade_task):
+    for task in (csv_task, email_task, scanner_task, auto_trade_btc, auto_trade_eth):
         task.cancel()
         try:
             await task

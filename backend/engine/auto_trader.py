@@ -1,21 +1,25 @@
 """
-auto_trader.py — Autonomous 60-second trading loop.
+auto_trader.py — Autonomous 60-second trading loop, one per asset (BTC / ETH).
 
-State machine:
-  SCANNING   → every 60 s: fetch latest alpha signals, pick the highest-edge
-               opportunity, place a $5 GTC BUY order. On success → MONITORING.
+State machine (per asset):
+  SCANNING   → every 60 s: fetch latest alpha signals filtered to this asset,
+               pick the highest-edge opportunity, place a $5 GTC BUY order.
+               On success → MONITORING.
   MONITORING → every 60 s: check open positions for the active token.
-               When curPrice / avgPrice >= 1.05 (5 % profit), place a SELL
-               order to close and return to SCANNING.
+               • Not filled yet → cancel and immediately re-scan.
+               • Filled and P&L >= 5 % → place SELL to close, return to SCANNING.
 
-The loop relies on csv_refresh_loop (already running in main.py) to keep the
-Deribit and Polymarket CSVs—and therefore the signal cache—up to date.
+Two independent asyncio tasks run in parallel:
+  auto_trader_loop("BTC")  and  auto_trader_loop("ETH")
+
+Both are started from main.py's lifespan.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
@@ -31,14 +35,28 @@ MIN_SHARES = 5.0         # Polymarket CLOB minimum order size
 PROFIT_TARGET_PCT = 5.0  # close when P&L % >= this value
 SCAN_INTERVAL_S = 60     # seconds between scans / position checks
 
+
 # ---------------------------------------------------------------------------
-# Shared mutable state – only mutated inside the loop coroutine (no races)
+# Per-asset state — each loop owns one instance; no sharing → no races
 # ---------------------------------------------------------------------------
 
-_state: str = "SCANNING"              # "SCANNING" | "MONITORING"
-_active_token_id: Optional[str] = None
-_active_order_id: Optional[str] = None
-_active_outcome: Optional[str] = None  # "YES" or "NO"
+@dataclass
+class _AssetState:
+    asset: str                        # "BTC" or "ETH"
+    state: str = "SCANNING"           # "SCANNING" | "MONITORING"
+    active_token_id: Optional[str] = None
+    active_order_id: Optional[str] = None
+    active_outcome: Optional[str] = None  # "YES" or "NO"
+
+    @property
+    def tag(self) -> str:
+        return f"[auto_trader/{self.asset}]"
+
+    def reset(self) -> None:
+        self.state = "SCANNING"
+        self.active_token_id = None
+        self.active_order_id = None
+        self.active_outcome = None
 
 
 # ---------------------------------------------------------------------------
@@ -97,21 +115,21 @@ def _resolve_token_ids(market_id: str) -> list[str]:
 # SCANNING phase
 # ---------------------------------------------------------------------------
 
-async def _scan_and_trade() -> bool:
+async def _scan_and_trade(st: _AssetState) -> bool:
     """
-    Find the highest-edge alpha signal and place a $5 BUY order.
+    Find the highest-edge alpha signal for `st.asset` and place a $5 BUY order.
     Returns True and transitions to MONITORING if an order is placed.
     """
-    global _state, _active_token_id, _active_order_id, _active_outcome
-
-    # Import here to avoid circular imports at module load time
     from csv_signals import get_latest_signals
     from clients.polymarket_trading import create_order as pm_create_order
 
     signals = get_latest_signals()
-    alpha = [s for s in signals if s.get("has_alpha")]
+    alpha = [
+        s for s in signals
+        if s.get("has_alpha") and (s.get("currency") or "").upper() == st.asset
+    ]
     if not alpha:
-        logger.info("[auto_trader] no alpha signals available — will retry")
+        logger.info("%s no alpha signals available — will retry", st.tag)
         return False
 
     alpha.sort(key=lambda s: float(s.get("abs_edge_pct") or 0), reverse=True)
@@ -124,14 +142,14 @@ async def _scan_and_trade() -> bool:
     abs_edge = float(best.get("abs_edge_pct") or 0)
 
     if not market_id:
-        logger.warning("[auto_trader] best signal has no polymarket_market_id; skipping")
+        logger.warning("%s best signal has no polymarket_market_id; skipping", st.tag)
         return False
 
     # Resolve CLOB token IDs
     try:
         yes_token, no_token = await asyncio.to_thread(_resolve_token_ids, market_id)
     except Exception as exc:
-        logger.error("[auto_trader] failed to resolve market %r: %s", market_id, exc)
+        logger.error("%s failed to resolve market %r: %s", st.tag, market_id, exc)
         return False
 
     # Decide side:
@@ -147,9 +165,7 @@ async def _scan_and_trade() -> bool:
         outcome = "NO"
 
     if not (0 < price < 1):
-        logger.warning(
-            "[auto_trader] invalid price %.4f for %r; skipping", price, market_id
-        )
+        logger.warning("%s invalid price %.4f for %r; skipping", st.tag, price, market_id)
         return False
 
     # Size: spend ~ORDER_USD, but respect the CLOB minimum share count
@@ -157,35 +173,27 @@ async def _scan_and_trade() -> bool:
     size = max(MIN_SHARES, size)
 
     logger.info(
-        "[auto_trader] SCAN → BUY %s '%s'  price=%.4f  size=%.2f  edge=%.1f%%",
-        outcome,
-        question[:70],
-        price,
-        size,
-        abs_edge,
+        "%s SCAN → BUY %s '%s'  price=%.4f  size=%.2f  edge=%.1f%%",
+        st.tag, outcome, question[:70], price, size, abs_edge,
     )
 
     try:
         resp = await asyncio.to_thread(pm_create_order, token_id, price, size, "BUY")
     except Exception as exc:
-        logger.error("[auto_trader] order placement error: %s", exc)
+        logger.error("%s order placement error: %s", st.tag, exc)
         return False
 
     if not resp.get("success"):
-        logger.error(
-            "[auto_trader] order rejected by CLOB: %s", resp.get("errorMsg", resp)
-        )
+        logger.error("%s order rejected by CLOB: %s", st.tag, resp.get("errorMsg", resp))
         return False
 
     order_id = resp.get("orderID")
-    logger.info(
-        "[auto_trader] order placed id=%s — switching to MONITORING", order_id
-    )
+    logger.info("%s order placed id=%s — switching to MONITORING", st.tag, order_id)
 
-    _state = "MONITORING"
-    _active_token_id = token_id
-    _active_order_id = order_id
-    _active_outcome = outcome
+    st.state = "MONITORING"
+    st.active_token_id = token_id
+    st.active_order_id = order_id
+    st.active_outcome = outcome
     return True
 
 
@@ -193,13 +201,11 @@ async def _scan_and_trade() -> bool:
 # MONITORING phase
 # ---------------------------------------------------------------------------
 
-async def _monitor_position() -> None:
+async def _monitor_position(st: _AssetState) -> None:
     """
     Check the open position for the active token. Close when 5 % profit reached.
-    Resets to SCANNING when the position is closed (or gone).
+    If the order is still unfilled, cancel and immediately re-scan.
     """
-    global _state, _active_token_id, _active_order_id, _active_outcome
-
     from clients.polymarket_trading import (
         fetch_positions as pm_fetch_positions,
         create_order as pm_create_order,
@@ -209,40 +215,32 @@ async def _monitor_position() -> None:
     try:
         positions = await asyncio.to_thread(pm_fetch_positions, True)
     except Exception as exc:
-        logger.error("[auto_trader] fetch_positions failed: %s", exc)
+        logger.error("%s fetch_positions failed: %s", st.tag, exc)
         return
 
     pos = next(
-        (p for p in positions if p.get("asset") == _active_token_id), None
+        (p for p in positions if p.get("asset") == st.active_token_id), None
     )
 
     if pos is None:
-        # Order was placed but not filled within the 60 s window.
-        # Cancel it and immediately re-scan for the best current opportunity.
-        if _active_order_id:
+        # Order placed but not filled within the 60 s window — cancel and re-scan.
+        if st.active_order_id:
             logger.info(
-                "[auto_trader] order %s not filled after 60s — cancelling and re-placing",
-                _active_order_id[:20],
+                "%s order %s not filled after 60s — cancelling and re-placing",
+                st.tag, st.active_order_id[:20],
             )
             try:
-                await asyncio.to_thread(pm_cancel_order, _active_order_id)
-                logger.info("[auto_trader] order cancelled — re-scanning")
+                await asyncio.to_thread(pm_cancel_order, st.active_order_id)
+                logger.info("%s order cancelled — re-scanning", st.tag)
             except Exception as exc:
                 logger.warning(
-                    "[auto_trader] cancel failed (%s) — resetting and re-scanning anyway", exc
+                    "%s cancel failed (%s) — resetting and re-scanning anyway", st.tag, exc
                 )
         else:
-            logger.debug(
-                "[auto_trader] no open position for %s",
-                (_active_token_id or "")[:20],
-            )
+            logger.debug("%s no open position for %s", st.tag, (st.active_token_id or "")[:20])
 
-        # Reset state then immediately try to place a fresh order.
-        _state = "SCANNING"
-        _active_token_id = None
-        _active_order_id = None
-        _active_outcome = None
-        await _scan_and_trade()
+        st.reset()
+        await _scan_and_trade(st)
         return
 
     avg = float(pos.get("avgPrice") or 0)
@@ -254,109 +252,97 @@ async def _monitor_position() -> None:
 
     pnl_pct = (cur - avg) / avg * 100.0
     logger.info(
-        "[auto_trader] MONITOR %s: avg=%.4f cur=%.4f size=%.2f pnl=%.2f%%",
-        (_active_token_id or "")[:20],
-        avg,
-        cur,
-        size,
-        pnl_pct,
+        "%s MONITOR %s: avg=%.4f cur=%.4f size=%.2f pnl=%.2f%%",
+        st.tag, (st.active_token_id or "")[:20], avg, cur, size, pnl_pct,
     )
 
     if pnl_pct < PROFIT_TARGET_PCT:
         return  # not yet profitable enough — keep waiting
 
     # 5 % (or more) profit reached — close position
-    # Sell 1 tick below current price for a quick fill
     sell_price = max(0.0001, min(0.9999, round(cur - 0.01, 4)))
-    logger.info(
-        "[auto_trader] %.1f%% profit reached — closing at %.4f", pnl_pct, sell_price
-    )
+    logger.info("%s %.1f%% profit reached — closing at %.4f", st.tag, pnl_pct, sell_price)
 
     try:
         resp = await asyncio.to_thread(
-            pm_create_order, _active_token_id, sell_price, size, "SELL"
+            pm_create_order, st.active_token_id, sell_price, size, "SELL"
         )
     except Exception as exc:
-        logger.error("[auto_trader] close order error: %s", exc)
+        logger.error("%s close order error: %s", st.tag, exc)
         return
 
     if not resp.get("success"):
-        logger.error(
-            "[auto_trader] close order rejected: %s", resp.get("errorMsg", resp)
-        )
+        logger.error("%s close order rejected: %s", st.tag, resp.get("errorMsg", resp))
         return
 
-    logger.info(
-        "[auto_trader] close order placed id=%s — resuming SCANNING",
-        resp.get("orderID"),
-    )
-
-    # Reset state
-    _state = "SCANNING"
-    _active_token_id = None
-    _active_order_id = None
-    _active_outcome = None
+    logger.info("%s close order placed id=%s — resuming SCANNING", st.tag, resp.get("orderID"))
+    st.reset()
 
 
 # ---------------------------------------------------------------------------
-# Startup helper — resume monitoring if a position was already open
+# Startup helper — resume monitoring if a position is already open
 # ---------------------------------------------------------------------------
 
-async def _resume_if_position_open() -> None:
+async def _resume_if_position_open(st: _AssetState) -> None:
     """
-    On server startup, check whether there is already an open position.
-    If so, enter MONITORING for the first matching position so we don't
-    open a duplicate trade.
+    On server startup, check for an existing open position for this asset.
+    If found, enter MONITORING so we don't open a duplicate trade.
     """
-    global _state, _active_token_id, _active_outcome
-
     from clients.polymarket_trading import fetch_positions as pm_fetch_positions
 
     try:
-        positions = await asyncio.to_thread(pm_fetch_positions, True)
+        all_positions = await asyncio.to_thread(pm_fetch_positions, True)
     except Exception as exc:
-        logger.warning("[auto_trader] startup position check failed: %s", exc)
+        logger.warning("%s startup position check failed: %s", st.tag, exc)
         return
 
-    if positions:
-        pos = positions[0]
-        token_id = pos.get("asset", "")
-        avg = float(pos.get("avgPrice") or 0)
-        logger.info(
-            "[auto_trader] found existing position %s avg=%.4f — starting in MONITORING mode",
-            token_id[:20],
-            avg,
-        )
-        _state = "MONITORING"
-        _active_token_id = token_id
-        _active_outcome = "UNKNOWN"
+    # We can't filter by currency here (positions don't carry it), so we
+    # check whether any position's title contains the asset name as a hint.
+    match = next(
+        (p for p in all_positions if st.asset.upper() in (p.get("title") or "").upper()),
+        None,
+    )
+    if match is None:
+        return
+
+    token_id = match.get("asset", "")
+    avg = float(match.get("avgPrice") or 0)
+    logger.info(
+        "%s found existing position %s avg=%.4f — starting in MONITORING mode",
+        st.tag, token_id[:20], avg,
+    )
+    st.state = "MONITORING"
+    st.active_token_id = token_id
+    st.active_outcome = "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Per-asset loop
 # ---------------------------------------------------------------------------
 
-async def auto_trader_loop() -> None:
+async def auto_trader_loop(asset: str) -> None:
     """
-    Entry point — run this as an asyncio task from main.py's lifespan.
+    Entry point for a single asset loop. Launch two of these — one for "BTC"
+    and one for "ETH" — as separate asyncio tasks from main.py's lifespan.
 
     Every SCAN_INTERVAL_S seconds:
-      • SCANNING   → try to find and place the best available trade
-      • MONITORING → check position P&L and close at 5 % profit
+      • SCANNING   → pick best signal for this asset and place a $5 BUY
+      • MONITORING → watch P&L; cancel & re-scan if unfilled; close at 5 % profit
     """
-    logger.info("[auto_trader] starting (interval=%ds)", SCAN_INTERVAL_S)
-    await _resume_if_position_open()
+    st = _AssetState(asset=asset.upper())
+    logger.info("%s starting (interval=%ds)", st.tag, SCAN_INTERVAL_S)
+    await _resume_if_position_open(st)
 
     while True:
         try:
-            if _state == "SCANNING":
-                await _scan_and_trade()
+            if st.state == "SCANNING":
+                await _scan_and_trade(st)
             else:
-                await _monitor_position()
+                await _monitor_position(st)
         except asyncio.CancelledError:
-            logger.info("[auto_trader] cancelled — shutting down")
+            logger.info("%s cancelled — shutting down", st.tag)
             raise
         except Exception as exc:
-            logger.exception("[auto_trader] unexpected error: %s", exc)
+            logger.exception("%s unexpected error: %s", st.tag, exc)
 
         await asyncio.sleep(SCAN_INTERVAL_S)
