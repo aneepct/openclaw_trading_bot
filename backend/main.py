@@ -429,9 +429,14 @@ _DERIBIT_SCRIPTS: dict[str, Path] = {
 }
 _POLYMARKET_SCRIPT = _BACKEND_ROOT / "polymarket_markets_export" / "export_markets.py"
 
+# Serialise all Deribit export calls so BTC and ETH never hit the API simultaneously.
+_deribit_export_lock = asyncio.Lock()
+
 
 async def _run_export(script: Path) -> None:
-    """Run an export script in a thread so the event loop stays free."""
+    """Run an export script in a thread so the event loop stays free.
+    Acquires a process-wide lock so concurrent HTTP requests cannot trigger
+    two Deribit scripts at the same time (which causes 429 errors)."""
     def _sync() -> None:
         result = subprocess.run(
             [sys.executable, str(script), "--depth", str(app_config.DERIBIT_DEPTH), "--max-instruments-per-day", "40"],
@@ -444,7 +449,8 @@ async def _run_export(script: Path) -> None:
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or f"Script exited with code {result.returncode}")
 
-    await asyncio.to_thread(_sync)
+    async with _deribit_export_lock:
+        await asyncio.to_thread(_sync)
 
 
 async def _run_polymarket_export() -> None:

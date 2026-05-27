@@ -22,6 +22,30 @@ from deribit_orderbook_data.util import (
 )
 
 
+async def _get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict,
+    *,
+    retries: int = 4,
+    base_delay: float = 2.0,
+) -> httpx.Response:
+    """GET with exponential back-off on 429 / 5xx responses."""
+    for attempt in range(retries):
+        resp = await client.get(url, params=params)
+        if resp.status_code == 429 or resp.status_code >= 500:
+            wait = base_delay * (2 ** attempt)
+            print(f"[retry] {resp.status_code} from {url} — waiting {wait:.1f}s (attempt {attempt + 1}/{retries})")
+            await asyncio.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp
+    # Final attempt — let it raise naturally
+    resp = await client.get(url, params=params)
+    resp.raise_for_status()
+    return resp
+
+
 async def _fetch_order_book(
     client: httpx.AsyncClient,
     *,
@@ -30,11 +54,11 @@ async def _fetch_order_book(
     sem: asyncio.Semaphore,
 ) -> tuple[str, dict[str, Any] | None]:
     async with sem:
-        resp = await client.get(
+        resp = await _get_with_retry(
+            client,
             f"{BASE_URL}/get_order_book",
-            params={"instrument_name": instrument_name, "depth": depth},
+            {"instrument_name": instrument_name, "depth": depth},
         )
-        resp.raise_for_status()
         payload = resp.json()
         return instrument_name, payload.get("result")
 
@@ -52,20 +76,25 @@ async def main() -> None:
     instruments_url = f"{BASE_URL}/get_instruments"
     index_url = f"{BASE_URL}/get_index_price"
 
-    sem = asyncio.Semaphore(10)  # cap in-flight order book requests
+    sem = asyncio.Semaphore(4)  # keep parallel requests low to avoid 429s
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        inst_resp = await client.get(
+    async with httpx.AsyncClient(timeout=30) as client:
+        inst_resp = await _get_with_retry(
+            client,
             instruments_url,
-            params={"currency": currency, "kind": "option", "expired": "false"},
+            {"currency": currency, "kind": "option", "expired": "false"},
         )
-        inst_resp.raise_for_status()
         instruments = inst_resp.json().get("result", [])
 
-        idx_resp = await client.get(index_url, params={"index_name": index_name})
-        idx_resp.raise_for_status()
-        index_payload = idx_resp.json().get("result", {}) or {}
-        index_price = index_payload.get("index_price")
+        try:
+            idx_resp = await _get_with_retry(
+                client, index_url, {"index_name": index_name}
+            )
+            index_payload = idx_resp.json().get("result", {}) or {}
+            index_price = index_payload.get("index_price")
+        except Exception as exc:
+            print(f"[{currency}] index price fetch failed ({exc}); proceeding without spot price")
+            index_price = None
 
         available = next_available_expiries(instruments, currency, count=2)
         expiry_map = {"today": available[0], "tomorrow": available[1]}
