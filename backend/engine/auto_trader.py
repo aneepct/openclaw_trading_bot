@@ -203,6 +203,7 @@ async def _monitor_position() -> None:
     from clients.polymarket_trading import (
         fetch_positions as pm_fetch_positions,
         create_order as pm_create_order,
+        cancel_order as pm_cancel_order,
     )
 
     try:
@@ -216,10 +217,32 @@ async def _monitor_position() -> None:
     )
 
     if pos is None:
-        logger.debug(
-            "[auto_trader] no open position for %s — order may still be resting",
-            (_active_token_id or "")[:20],
-        )
+        # Order was placed but not filled within the 60 s window.
+        # Cancel it and immediately re-scan for the best current opportunity.
+        if _active_order_id:
+            logger.info(
+                "[auto_trader] order %s not filled after 60s — cancelling and re-placing",
+                _active_order_id[:20],
+            )
+            try:
+                await asyncio.to_thread(pm_cancel_order, _active_order_id)
+                logger.info("[auto_trader] order cancelled — re-scanning")
+            except Exception as exc:
+                logger.warning(
+                    "[auto_trader] cancel failed (%s) — resetting and re-scanning anyway", exc
+                )
+        else:
+            logger.debug(
+                "[auto_trader] no open position for %s",
+                (_active_token_id or "")[:20],
+            )
+
+        # Reset state then immediately try to place a fresh order.
+        _state = "SCANNING"
+        _active_token_id = None
+        _active_order_id = None
+        _active_outcome = None
+        await _scan_and_trade()
         return
 
     avg = float(pos.get("avgPrice") or 0)
