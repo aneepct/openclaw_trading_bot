@@ -24,6 +24,7 @@ import memory_store as db_module
 from memory_store import get_leaderboard, get_recent_signals, init_db
 import engine.scanner as scanner_module
 from engine.scanner import scan_once, ticker_loop, _scan_lock
+from engine.auto_trader import auto_trader_loop
 from csv_signals import get_latest_signals as get_csv_pipeline_signals
 import config as app_config
 from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
@@ -61,11 +62,12 @@ def get_latest_signals():
 async def lifespan(app: FastAPI):
     await init_db()
     cfg = make_default_cfg()
-    csv_task   = asyncio.create_task(csv_refresh_loop(cfg=cfg))
-    email_task = asyncio.create_task(email_scheduler_loop(cfg=cfg))
-    scanner_task = asyncio.create_task(ticker_loop())
+    csv_task        = asyncio.create_task(csv_refresh_loop(cfg=cfg))
+    email_task      = asyncio.create_task(email_scheduler_loop(cfg=cfg))
+    scanner_task    = asyncio.create_task(ticker_loop())
+    auto_trade_task = asyncio.create_task(auto_trader_loop())
     yield
-    for task in (csv_task, email_task, scanner_task):
+    for task in (csv_task, email_task, scanner_task, auto_trade_task):
         task.cancel()
         try:
             await task
