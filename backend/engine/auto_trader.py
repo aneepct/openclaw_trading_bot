@@ -152,30 +152,17 @@ async def _scan_and_trade(st: _AssetState) -> bool:
         logger.error("%s failed to resolve market %r: %s", st.tag, market_id, exc)
         return False
 
-    # Decide side using the signal's authoritative recommended_action / direction fields.
-    # recommended_action is "BUY YES" or "BUY NO" (set by openai_agent.py).
-    # Fall back to edge_pct sign only if the field is absent.
-    recommended = (best.get("recommended_action") or "").upper()
-    direction    = (best.get("direction") or "").upper()
-
-    if "YES" in recommended or direction == "BUY":
+    # Decide side based on which outcome Polymarket considers most likely.
+    # If YES price >= 0.5, the market leans YES → buy YES token.
+    # If YES price < 0.5, NO is more probable → buy NO token.
+    if poly_price >= 0.5:
         token_id = yes_token
         price    = poly_price
         outcome  = "YES"
-    elif "NO" in recommended or direction == "SELL":
+    else:
         token_id = no_token
         price    = round(1.0 - poly_price, 4)
         outcome  = "NO"
-    else:
-        # last-resort fallback: derive from edge_pct sign
-        if edge_pct > 0:
-            token_id = yes_token
-            price    = poly_price
-            outcome  = "YES"
-        else:
-            token_id = no_token
-            price    = round(1.0 - poly_price, 4)
-            outcome  = "NO"
 
     if not (0 < price < 1):
         logger.warning("%s invalid price %.4f for %r; skipping", st.tag, price, market_id)
