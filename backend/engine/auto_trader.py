@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -124,12 +125,28 @@ async def _scan_and_trade(st: _AssetState) -> bool:
     from clients.polymarket_trading import create_order as pm_create_order
 
     signals = get_latest_signals()
+
+    # Only trade markets resolving TODAY (UTC). Skip if only tomorrow's market exists.
+    today_utc = datetime.now(timezone.utc).date()
+
+    def _resolves_today(s: dict) -> bool:
+        raw = s.get("market_resolution_at") or ""
+        if not raw:
+            return False
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return dt.astimezone(timezone.utc).date() == today_utc
+        except Exception:
+            return False
+
     alpha = [
         s for s in signals
-        if s.get("has_alpha") and (s.get("currency") or "").upper() == st.asset
+        if s.get("has_alpha")
+        and (s.get("currency") or "").upper() == st.asset
+        and _resolves_today(s)
     ]
     if not alpha:
-        logger.info("%s no alpha signals available — will retry", st.tag)
+        logger.info("%s no alpha signals resolving today (%s) — skipping", st.tag, today_utc)
         return False
 
     alpha.sort(key=lambda s: float(s.get("abs_edge_pct") or 0), reverse=True)
