@@ -235,8 +235,15 @@ async def _monitor_position(st: _AssetState) -> None:
         logger.error("%s fetch_positions failed: %s", st.tag, exc)
         return
 
+    # Match position by `asset` (primary key) or `tokenId` (fallback) to be
+    # robust against different field names returned by the data API.
     pos = next(
-        (p for p in positions if p.get("asset") == st.active_token_id), None
+        (
+            p for p in positions
+            if p.get("asset") == st.active_token_id
+            or p.get("tokenId") == st.active_token_id
+        ),
+        None,
     )
 
     if pos is None:
@@ -250,9 +257,13 @@ async def _monitor_position(st: _AssetState) -> None:
                 await asyncio.to_thread(pm_cancel_order, st.active_order_id)
                 logger.info("%s order cancelled — re-scanning", st.tag)
             except Exception as exc:
+                # Cancel failed — the order may still be live on the CLOB.
+                # Do NOT place a new order; wait for the next cycle to retry.
                 logger.warning(
-                    "%s cancel failed (%s) — resetting and re-scanning anyway", st.tag, exc
+                    "%s cancel failed (%s) — will retry next cycle without placing a new order",
+                    st.tag, exc,
                 )
+                return
         else:
             logger.debug("%s no open position for %s", st.tag, (st.active_token_id or "")[:20])
 
@@ -272,6 +283,29 @@ async def _monitor_position(st: _AssetState) -> None:
         "%s MONITOR %s: avg=%.4f cur=%.4f size=%.2f pnl=%.2f%%",
         st.tag, (st.active_token_id or "")[:20], avg, cur, size, pnl_pct,
     )
+
+    # Stop-loss: close immediately if loss exceeds 50 %
+    STOP_LOSS_PCT = -50.0
+    if pnl_pct <= STOP_LOSS_PCT:
+        sell_price = max(0.0001, min(0.9999, round(cur - 0.01, 4)))
+        logger.warning(
+            "%s STOP-LOSS triggered at %.1f%% — closing at %.4f", st.tag, pnl_pct, sell_price
+        )
+        try:
+            resp = await asyncio.to_thread(
+                pm_create_order, st.active_token_id, sell_price, size, "SELL"
+            )
+        except Exception as exc:
+            logger.error("%s stop-loss order error: %s", st.tag, exc)
+            return
+        if not resp.get("success"):
+            logger.error("%s stop-loss order rejected: %s", st.tag, resp.get("errorMsg", resp))
+            return
+        logger.info(
+            "%s stop-loss order placed id=%s — resuming SCANNING", st.tag, resp.get("orderID")
+        )
+        st.reset()
+        return
 
     if pnl_pct < PROFIT_TARGET_PCT:
         return  # not yet profitable enough — keep waiting
