@@ -323,8 +323,8 @@ class TestResumeIfPositionOpen:
         ])
         _pm_trading.fetch_positions = MagicMock(return_value=[])
 
-        with patch("engine.auto_trader._question_for_token",
-                   return_value="Will BTC exceed $100k on May 31?"):
+        with patch("engine.auto_trader._market_info_for_token",
+                   return_value={"question": "Will BTC exceed $100k on May 31?", "end_date": None}):
             await _resume_if_position_open(st)
 
         assert st.state == "MONITORING"
@@ -340,8 +340,8 @@ class TestResumeIfPositionOpen:
             {"asset": "tok_btc_yes", "avgPrice": 0.65, "curPrice": 0.66, "size": 8}
         ])
 
-        with patch("engine.auto_trader._question_for_token",
-                   return_value="BTC above 90k?"):
+        with patch("engine.auto_trader._market_info_for_token",
+                   return_value={"question": "BTC above 90k?", "end_date": None}):
             await _resume_if_position_open(st)
 
         assert st.state == "MONITORING"
@@ -357,8 +357,8 @@ class TestResumeIfPositionOpen:
             {"asset": "tok_eth_yes", "avgPrice": 0.55, "curPrice": 0.56, "size": 9}
         ])
 
-        with patch("engine.auto_trader._question_for_token",
-                   return_value="Will ETH exceed $5k?"):
+        with patch("engine.auto_trader._market_info_for_token",
+                   return_value={"question": "Will ETH exceed $5k?", "end_date": None}):
             await _resume_if_position_open(st)
 
         assert st.state == "SCANNING"

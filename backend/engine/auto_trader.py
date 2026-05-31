@@ -48,6 +48,7 @@ class _AssetState:
     active_token_id: Optional[str] = None
     active_order_id: Optional[str] = None
     active_outcome: Optional[str] = None  # "YES" or "NO"
+    market_end_date: Optional[str] = None  # ISO datetime of market resolution (endDate @ 16:00 UTC)
 
     @property
     def tag(self) -> str:
@@ -58,6 +59,7 @@ class _AssetState:
         self.active_token_id = None
         self.active_order_id = None
         self.active_outcome = None
+        self.market_end_date = None
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +225,8 @@ async def _scan_and_trade(st: _AssetState) -> bool:
     st.active_token_id = token_id
     st.active_order_id = order_id
     st.active_outcome = outcome
+    if not st.market_end_date:
+        st.market_end_date = best.get("market_resolution_at") or None
     return True
 
 
@@ -296,6 +300,37 @@ async def _monitor_position(st: _AssetState) -> None:
         st.tag, (st.active_token_id or "")[:20], avg, cur, size, pnl_pct,
     )
 
+    # Close immediately if market has reached its resolution time
+    if st.market_end_date:
+        try:
+            end_dt = datetime.fromisoformat(st.market_end_date.replace("Z", "+00:00"))
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            if end_dt <= datetime.now(timezone.utc):
+                sell_price = max(0.0001, min(0.9999, round(cur - 0.01, 4)))
+                logger.warning(
+                    "%s market expired at %s — closing position at %.4f (pnl=%.2f%%)",
+                    st.tag, st.market_end_date, sell_price, pnl_pct,
+                )
+                try:
+                    resp = await asyncio.to_thread(
+                        pm_create_order, st.active_token_id, sell_price, size, "SELL"
+                    )
+                except Exception as exc:
+                    logger.error("%s expiry close order error: %s", st.tag, exc)
+                    return
+                if not resp.get("success"):
+                    logger.error("%s expiry close order rejected: %s", st.tag, resp.get("errorMsg", resp))
+                    return
+                logger.info(
+                    "%s expiry close order placed id=%s — resuming SCANNING",
+                    st.tag, resp.get("orderID"),
+                )
+                st.reset()
+                return
+        except Exception:
+            pass
+
     # Stop-loss: close immediately if loss exceeds 50 %
     STOP_LOSS_PCT = -50.0
     if pnl_pct <= STOP_LOSS_PCT:
@@ -342,8 +377,12 @@ async def _monitor_position(st: _AssetState) -> None:
     st.reset()
 
 
-def _question_for_token(token_id: str) -> str:
-    """Return the Polymarket market question for a CLOB token ID, or '' on failure."""
+def _market_info_for_token(token_id: str) -> dict:
+    """
+    Return {'question': str, 'end_date': str|None} for a CLOB token ID.
+
+    end_date is taken directly from the API response (already 16:00 UTC).
+    """
     try:
         r = httpx.get(
             "https://gamma-api.polymarket.com/markets",
@@ -354,10 +393,18 @@ def _question_for_token(token_id: str) -> str:
             data = r.json()
             markets = data if isinstance(data, list) else data.get("markets", [])
             if markets:
-                return markets[0].get("question") or ""
+                m = markets[0]
+                question = m.get("question") or ""
+                end_date = m.get("endDateIso") or m.get("endDate") or None
+                return {"question": question, "end_date": end_date}
     except Exception:
         pass
-    return ""
+    return {"question": "", "end_date": None}
+
+
+def _question_for_token(token_id: str) -> str:
+    """Return the Polymarket market question for a CLOB token ID, or '' on failure."""
+    return _market_info_for_token(token_id)["question"]
 
 
 # ---------------------------------------------------------------------------
@@ -391,8 +438,8 @@ async def _resume_if_position_open(st: _AssetState) -> None:
             token_id = order.get("asset_id") or order.get("tokenId") or ""
             if not token_id:
                 continue
-            question = await asyncio.to_thread(_question_for_token, token_id)
-            if st.asset.upper() in question.upper():
+            info = await asyncio.to_thread(_market_info_for_token, token_id)
+            if st.asset.upper() in (info["question"] or "").upper():
                 order_id = order.get("id") or order.get("orderID") or ""
                 logger.info(
                     "%s found open BUY order id=%s token=%s — resuming MONITORING",
@@ -402,6 +449,8 @@ async def _resume_if_position_open(st: _AssetState) -> None:
                 st.active_token_id = token_id
                 st.active_order_id = order_id
                 st.active_outcome = "UNKNOWN"
+                if not st.market_end_date:
+                    st.market_end_date = info["end_date"]
                 return
     except Exception as exc:
         logger.warning("%s startup open-order check failed: %s", st.tag, exc)
@@ -413,8 +462,8 @@ async def _resume_if_position_open(st: _AssetState) -> None:
             token_id = pos.get("asset") or pos.get("tokenId") or ""
             if not token_id:
                 continue
-            question = await asyncio.to_thread(_question_for_token, token_id)
-            if st.asset.upper() in question.upper():
+            info = await asyncio.to_thread(_market_info_for_token, token_id)
+            if st.asset.upper() in (info["question"] or "").upper():
                 avg = float(pos.get("avgPrice") or 0)
                 logger.info(
                     "%s found existing position token=%s avg=%.4f — resuming MONITORING",
@@ -424,6 +473,8 @@ async def _resume_if_position_open(st: _AssetState) -> None:
                 st.active_token_id = token_id
                 st.active_order_id = None  # already filled; nothing to cancel
                 st.active_outcome = "UNKNOWN"
+                if not st.market_end_date:
+                    st.market_end_date = info["end_date"]
                 return
     except Exception as exc:
         logger.warning("%s startup position check failed: %s", st.tag, exc)
