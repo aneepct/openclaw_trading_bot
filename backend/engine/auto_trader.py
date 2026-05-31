@@ -48,7 +48,7 @@ class _AssetState:
     active_token_id: Optional[str] = None
     active_order_id: Optional[str] = None
     active_outcome: Optional[str] = None  # "YES" or "NO"
-    market_end_date: Optional[str] = None  # ISO datetime of market resolution (endDate @ 16:00 UTC)
+    market_end_date: Optional[str] = None  # endDate ISO datetime from Gamma API (e.g. "2026-06-01T16:00:00Z")
 
     @property
     def tag(self) -> str:
@@ -301,6 +301,10 @@ async def _monitor_position(st: _AssetState) -> None:
     )
 
     # Close immediately if market has reached its resolution time
+    logger.info(
+        "%s expiry check: market_end_date=%s now_utc=%s",
+        st.tag, st.market_end_date, datetime.now(timezone.utc).isoformat(),
+    )
     if st.market_end_date:
         try:
             end_dt = datetime.fromisoformat(st.market_end_date.replace("Z", "+00:00"))
@@ -395,7 +399,7 @@ def _market_info_for_token(token_id: str) -> dict:
             if markets:
                 m = markets[0]
                 question = m.get("question") or ""
-                end_date = m.get("endDateIso") or m.get("endDate") or None
+                end_date = m.get("endDate") or None
                 return {"question": question, "end_date": end_date}
     except Exception:
         pass
@@ -405,6 +409,22 @@ def _market_info_for_token(token_id: str) -> dict:
 def _question_for_token(token_id: str) -> str:
     """Return the Polymarket market question for a CLOB token ID, or '' on failure."""
     return _market_info_for_token(token_id)["question"]
+
+
+# Mapping from internal asset code to keywords that appear in Polymarket question text.
+_ASSET_KEYWORDS: dict[str, list[str]] = {
+    "BTC": ["BTC", "Bitcoin"],
+    "ETH": ["ETH", "Ethereum"],
+}
+
+
+def _question_matches_asset(question: str, asset: str) -> bool:
+    """Return True if any keyword for the asset appears in the question (case-insensitive)."""
+    q = question.upper()
+    for kw in _ASSET_KEYWORDS.get(asset.upper(), [asset.upper()]):
+        if kw.upper() in q:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +459,7 @@ async def _resume_if_position_open(st: _AssetState) -> None:
             if not token_id:
                 continue
             info = await asyncio.to_thread(_market_info_for_token, token_id)
-            if st.asset.upper() in (info["question"] or "").upper():
+            if _question_matches_asset(info["question"] or "", st.asset):
                 order_id = order.get("id") or order.get("orderID") or ""
                 logger.info(
                     "%s found open BUY order id=%s token=%s — resuming MONITORING",
@@ -463,7 +483,7 @@ async def _resume_if_position_open(st: _AssetState) -> None:
             if not token_id:
                 continue
             info = await asyncio.to_thread(_market_info_for_token, token_id)
-            if st.asset.upper() in (info["question"] or "").upper():
+            if _question_matches_asset(info["question"] or "", st.asset):
                 avg = float(pos.get("avgPrice") or 0)
                 logger.info(
                     "%s found existing position token=%s avg=%.4f — resuming MONITORING",
