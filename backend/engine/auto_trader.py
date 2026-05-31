@@ -182,7 +182,7 @@ async def _scan_and_trade(st: _AssetState) -> bool:
         outcome_target = "NO"
     else:
         logger.info(
-            "%s deribit_prob=%.3f in neutral band (0.49–0.51) — no strong conviction, skipping",
+            "%s deribit_prob=%.3f in neutral band (0.49-0.51) — no strong conviction, skipping",
             st.tag, deribit_prob,
         )
         return False
