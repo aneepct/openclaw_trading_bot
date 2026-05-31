@@ -17,6 +17,14 @@ from fastapi.responses import StreamingResponse
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 
+# Ensure application loggers (e.g. engine.auto_trader) emit to stdout
+# even when uvicorn doesn't configure a root handler.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:     %(message)s",
+    stream=sys.stdout,
+)
+
 logger = logging.getLogger(__name__)
 
 from agents.openai_agent import build_agent_summary

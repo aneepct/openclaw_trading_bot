@@ -515,7 +515,10 @@ async def auto_trader_loop(asset: str) -> None:
     """
     st = _AssetState(asset=asset.upper())
     logger.info("%s starting (interval=%ds)", st.tag, SCAN_INTERVAL_S)
-    await _resume_if_position_open(st)
+    try:
+        await _resume_if_position_open(st)
+    except Exception as exc:
+        logger.exception("%s _resume_if_position_open failed at startup: %s", st.tag, exc)
 
     while True:
         try:
