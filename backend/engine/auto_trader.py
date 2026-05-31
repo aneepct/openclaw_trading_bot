@@ -152,14 +152,28 @@ async def _scan_and_trade(st: _AssetState) -> bool:
     alpha.sort(key=lambda s: float(s.get("abs_edge_pct") or 0), reverse=True)
     best = alpha[0]
 
-    market_id = best.get("polymarket_market_id") or ""
-    edge_pct = float(best.get("edge_pct") or 0)
-    poly_price = float(best.get("polymarket_price") or 0)
-    question = best.get("polymarket_question") or "?"
-    abs_edge = float(best.get("abs_edge_pct") or 0)
+    market_id    = best.get("polymarket_market_id") or ""
+    edge_pct     = float(best.get("edge_pct") or 0)
+    poly_price   = float(best.get("polymarket_price") or 0)
+    deribit_prob = float(best.get("deribit_prob") or 0)
+    question     = best.get("polymarket_question") or "?"
+    abs_edge     = float(best.get("abs_edge_pct") or 0)
 
     if not market_id:
         logger.warning("%s best signal has no polymarket_market_id; skipping", st.tag)
+        return False
+
+    # Require Deribit conviction > 51 % for YES or < 49 % for NO.
+    # The 0.49–0.51 band means Deribit has no strong view — skip.
+    if deribit_prob > 0.51:
+        outcome_target = "YES"
+    elif deribit_prob < 0.49:
+        outcome_target = "NO"
+    else:
+        logger.info(
+            "%s deribit_prob=%.3f in neutral band (0.49–0.51) — no strong conviction, skipping",
+            st.tag, deribit_prob,
+        )
         return False
 
     # Resolve CLOB token IDs
@@ -169,10 +183,8 @@ async def _scan_and_trade(st: _AssetState) -> bool:
         logger.error("%s failed to resolve market %r: %s", st.tag, market_id, exc)
         return False
 
-    # Decide side based on which outcome Polymarket considers most likely.
-    # If YES price >= 0.5, the market leans YES → buy YES token.
-    # If YES price < 0.5, NO is more probable → buy NO token.
-    if poly_price >= 0.5:
+    # Use deribit_prob to pick side; derive the CLOB entry price accordingly.
+    if outcome_target == "YES":
         token_id = yes_token
         price    = poly_price
         outcome  = "YES"
@@ -330,41 +342,91 @@ async def _monitor_position(st: _AssetState) -> None:
     st.reset()
 
 
+def _question_for_token(token_id: str) -> str:
+    """Return the Polymarket market question for a CLOB token ID, or '' on failure."""
+    try:
+        r = httpx.get(
+            "https://gamma-api.polymarket.com/markets",
+            params={"clob_token_ids": token_id},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            markets = data if isinstance(data, list) else data.get("markets", [])
+            if markets:
+                return markets[0].get("question") or ""
+    except Exception:
+        pass
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Startup helper — resume monitoring if a position is already open
 # ---------------------------------------------------------------------------
 
 async def _resume_if_position_open(st: _AssetState) -> None:
     """
-    On server startup, check for an existing open position for this asset.
-    If found, enter MONITORING so we don't open a duplicate trade.
-    """
-    from clients.polymarket_trading import fetch_positions as pm_fetch_positions
+    On server startup, check for an existing open order or filled position for
+    this asset. If found, enter MONITORING so we don't open a duplicate trade.
 
+    Strategy:
+      1. Check open (unfilled) orders via the CLOB API → restores token_id + order_id.
+      2. Check filled positions via the Data API → restores token_id only.
+      In both cases the market question is looked up via the Gamma API to
+      confirm the token belongs to this asset (BTC / ETH).
+    """
+    from clients.polymarket_trading import (
+        fetch_positions as pm_fetch_positions,
+        fetch_open_orders as pm_fetch_open_orders,
+    )
+
+    # --- Step 1: look for an unfilled BUY order ---
     try:
-        all_positions = await asyncio.to_thread(pm_fetch_positions, True)
+        open_orders = await asyncio.to_thread(pm_fetch_open_orders)
+        buy_orders = [
+            o for o in open_orders
+            if (o.get("side") or "").upper() == "BUY"
+        ]
+        for order in buy_orders:
+            token_id = order.get("asset_id") or order.get("tokenId") or ""
+            if not token_id:
+                continue
+            question = await asyncio.to_thread(_question_for_token, token_id)
+            if st.asset.upper() in question.upper():
+                order_id = order.get("id") or order.get("orderID") or ""
+                logger.info(
+                    "%s found open BUY order id=%s token=%s — resuming MONITORING",
+                    st.tag, order_id[:20], token_id[:20],
+                )
+                st.state = "MONITORING"
+                st.active_token_id = token_id
+                st.active_order_id = order_id
+                st.active_outcome = "UNKNOWN"
+                return
+    except Exception as exc:
+        logger.warning("%s startup open-order check failed: %s", st.tag, exc)
+
+    # --- Step 2: look for a filled (held) position ---
+    try:
+        positions = await asyncio.to_thread(pm_fetch_positions, True)
+        for pos in positions:
+            token_id = pos.get("asset") or pos.get("tokenId") or ""
+            if not token_id:
+                continue
+            question = await asyncio.to_thread(_question_for_token, token_id)
+            if st.asset.upper() in question.upper():
+                avg = float(pos.get("avgPrice") or 0)
+                logger.info(
+                    "%s found existing position token=%s avg=%.4f — resuming MONITORING",
+                    st.tag, token_id[:20], avg,
+                )
+                st.state = "MONITORING"
+                st.active_token_id = token_id
+                st.active_order_id = None  # already filled; nothing to cancel
+                st.active_outcome = "UNKNOWN"
+                return
     except Exception as exc:
         logger.warning("%s startup position check failed: %s", st.tag, exc)
-        return
-
-    # We can't filter by currency here (positions don't carry it), so we
-    # check whether any position's title contains the asset name as a hint.
-    match = next(
-        (p for p in all_positions if st.asset.upper() in (p.get("title") or "").upper()),
-        None,
-    )
-    if match is None:
-        return
-
-    token_id = match.get("asset", "")
-    avg = float(match.get("avgPrice") or 0)
-    logger.info(
-        "%s found existing position %s avg=%.4f — starting in MONITORING mode",
-        st.tag, token_id[:20], avg,
-    )
-    st.state = "MONITORING"
-    st.active_token_id = token_id
-    st.active_outcome = "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
