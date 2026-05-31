@@ -148,7 +148,16 @@ async def _scan_and_trade(st: _AssetState) -> bool:
         and _resolves_today(s)
     ]
     if not alpha:
-        logger.info("%s no alpha signals resolving today (%s) — skipping", st.tag, today_utc)
+        # Diagnostic: break down why no signals passed
+        asset_signals = [s for s in signals if (s.get("currency") or "").upper() == st.asset]
+        today_signals = [s for s in asset_signals if _resolves_today(s)]
+        alpha_signals = [s for s in today_signals if s.get("has_alpha")]
+        logger.info(
+            "%s no alpha signals resolving today (%s) — "
+            "total=%d asset=%d today=%d has_alpha=%d",
+            st.tag, today_utc,
+            len(signals), len(asset_signals), len(today_signals), len(alpha_signals),
+        )
         return False
 
     alpha.sort(key=lambda s: float(s.get("abs_edge_pct") or 0), reverse=True)
