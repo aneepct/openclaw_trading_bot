@@ -17,9 +17,7 @@ Add to ~/Library/Application Support/Claude/claude_desktop_config.json:
           "command": "python",
           "args": ["/full/path/to/scripts/mcp_server.py"],
           "env": {
-            "OPENCLAW_API_URL": "https://openclaw-api.aneep.tech",
-            "OPENCLAW_API_KEY": "<your-OPENCLAW_API_KEY>",
-            "POLYMARKET_API_KEY": "<your-POLYMARKET_API_KEY>"
+            "OPENCLAW_API_URL": "https://openclaw-api.aneep.tech"
           }
         }
       }
@@ -53,22 +51,15 @@ except ImportError:
 
 OPENCLAW_API_URL = os.getenv("OPENCLAW_API_URL", "http://localhost:8000").rstrip("/")
 POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "")
-OPENCLAW_API_KEY = os.getenv("OPENCLAW_API_KEY", "")
 
 mcp = FastMCP("OpenClaw Trading Bot")
 
 
 def _headers() -> dict:
-    """Build request headers, including x-api-key if configured.
-    OPENCLAW_API_KEY protects the internal POST endpoints (scan, csv refresh, system-prompt).
-    POLYMARKET_API_KEY protects the trading endpoints (/polymarket/*).
-    If both are set, OPENCLAW_API_KEY takes precedence for non-trading calls,
-    but we send whichever is available (they may be the same value).
-    """
+    """Build request headers, including x-api-key if configured."""
     h = {}
-    key = OPENCLAW_API_KEY or POLYMARKET_API_KEY
-    if key:
-        h["x-api-key"] = key
+    if POLYMARKET_API_KEY:
+        h["x-api-key"] = POLYMARKET_API_KEY
     return h
 
 
