@@ -6,6 +6,7 @@ import LoadingScreen from './components/LoadingScreen';
 import { isPolymarketMarketRow } from './polymarketFilters';
 
 const API = (process.env.REACT_APP_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+const INTERNAL_API_KEY = process.env.REACT_APP_OPENCLAW_TOKEN || '';
 
 const styles = {
   app: { minHeight: '100vh', background: '#0a0e1a', padding: '1.5rem', fontFamily: "'Courier New', monospace" },
@@ -138,9 +139,15 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const scanRes = await fetch(`${API}/scan`, { method: 'POST' });
+      const scanRes = await fetch(`${API}/scan`, {
+        method: 'POST',
+        headers: { 'x-api-key': INTERNAL_API_KEY },
+      });
       if (!scanRes.ok) throw new Error(`Scan failed: ${scanRes.status}`);
-      const csvRes = await fetch(`${API}/refresh/csv`, { method: 'POST' });
+      const csvRes = await fetch(`${API}/refresh/csv`, {
+        method: 'POST',
+        headers: { 'x-api-key': INTERNAL_API_KEY },
+      });
       if (!csvRes.ok) throw new Error(`CSV refresh failed: ${csvRes.status}`);
       // Call AI providers only on manual refresh
       const agentRes = await fetch(`${API}/agent/summary?limit=22`);
@@ -203,7 +210,7 @@ export default function App() {
     try {
       const res = await fetch(`${API}/agent/system-prompt/${promptProvider}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-api-key': INTERNAL_API_KEY },
         body: JSON.stringify({ prompt: prompts[promptProvider] }),
       });
       if (!res.ok) throw new Error(`Prompt save failed: ${res.status}`);

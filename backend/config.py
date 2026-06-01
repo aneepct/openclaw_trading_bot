@@ -118,3 +118,9 @@ POLYMARKET_FUNDER      = os.getenv("POLYMARKET_FUNDER", "").strip()
 POLYMARKET_CLOB_API    = os.getenv("POLYMARKET_CLOB_API", "https://clob.polymarket.com")
 POLYMARKET_DATA_API    = os.getenv("POLYMARKET_DATA_API", "https://data-api.polymarket.com")
 POLYMARKET_API_KEY     = os.getenv("POLYMARKET_API_KEY", "").strip()
+
+# ── Dashboard / internal API key ──────────────────────────────
+# Protects POST endpoints (scan, csv refresh, system-prompt writes).
+# Set OPENCLAW_API_KEY in the server environment and REACT_APP_OPENCLAW_TOKEN
+# to the same value in the frontend build so the dashboard can call them.
+OPENCLAW_API_KEY = os.getenv("OPENCLAW_API_KEY", "").strip()
