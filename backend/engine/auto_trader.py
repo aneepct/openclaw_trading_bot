@@ -139,10 +139,36 @@ async def _scan_and_trade(st: _AssetState) -> bool:
     from clients.polymarket_trading import (
         create_order as pm_create_order,
         fetch_open_orders as pm_fetch_open_orders,
+        fetch_positions as pm_fetch_positions,
     )
 
-    # Guard: do not open a new position if an unfilled BUY order is already live.
-    # This prevents duplicate orders if the state machine gets out of sync.
+    # Guard 1: do not open a new position if a filled position already exists for this asset.
+    # Covers the case where the state drifted to SCANNING while a filled position is still held.
+    try:
+        existing_positions = await asyncio.to_thread(pm_fetch_positions, True)
+        for pos in existing_positions:
+            token_id = pos.get("asset") or pos.get("tokenId") or ""
+            if not token_id:
+                continue
+            info = await asyncio.to_thread(_market_info_for_token, token_id)
+            if _question_matches_asset(info["question"] or "", st.asset):
+                logger.warning(
+                    "%s aborting scan — existing filled position found for token=%s; "
+                    "switching to MONITORING",
+                    st.tag, token_id[:20],
+                )
+                st.state = "MONITORING"
+                st.active_token_id = token_id
+                st.active_order_id = None
+                st.active_outcome = "UNKNOWN"
+                if not st.market_end_date:
+                    st.market_end_date = info["end_date"]
+                return False
+    except Exception as exc:
+        logger.warning("%s pre-scan position check failed: %s", st.tag, exc)
+
+    # Guard 2: do not open a new position if an unfilled BUY order is already live.
+    # Covers the case where the state drifted to SCANNING while an order is still resting.
     try:
         open_orders = await asyncio.to_thread(pm_fetch_open_orders)
         for order in open_orders:
