@@ -49,6 +49,7 @@ class _AssetState:
     active_order_id: Optional[str] = None
     active_outcome: Optional[str] = None  # "YES" or "NO"
     market_end_date: Optional[str] = None  # endDate ISO datetime from Gamma API (e.g. "2026-06-01T16:00:00Z")
+    extra_token_ids: list = field(default_factory=list)  # additional filled positions to monitor alongside primary
 
     @property
     def tag(self) -> str:
@@ -60,6 +61,17 @@ class _AssetState:
         self.active_order_id = None
         self.active_outcome = None
         self.market_end_date = None
+        self.extra_token_ids = []
+
+    def close_and_promote(self) -> None:
+        """After closing the active position, promote the next extra if any; else reset to SCANNING."""
+        if self.extra_token_ids:
+            self.active_token_id = self.extra_token_ids.pop(0)
+            self.active_order_id = None
+            self.active_outcome = "UNKNOWN"
+            # state stays MONITORING; market_end_date stays (same asset)
+        else:
+            self.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +335,18 @@ async def _monitor_position(st: _AssetState) -> None:
         else:
             logger.debug("%s no open position for %s", st.tag, (st.active_token_id or "")[:20])
 
+        # If extra positions exist, promote the first rather than going back to SCANNING.
+        if st.extra_token_ids:
+            promoted = st.extra_token_ids.pop(0)
+            logger.info(
+                "%s promoting extra position %s to active — staying in MONITORING",
+                st.tag, promoted[:20],
+            )
+            st.active_token_id = promoted
+            st.active_order_id = None
+            st.active_outcome = "UNKNOWN"
+            return
+
         st.reset()
         await _scan_and_trade(st)
         return
@@ -370,7 +394,7 @@ async def _monitor_position(st: _AssetState) -> None:
                     "%s expiry close order placed id=%s — resuming SCANNING",
                     st.tag, resp.get("orderID"),
                 )
-                st.reset()
+                st.close_and_promote()
                 return
         except Exception:
             pass
@@ -395,8 +419,101 @@ async def _monitor_position(st: _AssetState) -> None:
         logger.info(
             "%s stop-loss order placed id=%s — resuming SCANNING", st.tag, resp.get("orderID")
         )
-        st.reset()
+        st.close_and_promote()
         return
+
+    # Monitor any extra positions tracked alongside the primary one.
+    # Runs before the early-return below so extras are always checked each cycle.
+    for extra_token_id in list(st.extra_token_ids):
+        extra_pos = next(
+            (
+                p for p in positions
+                if p.get("asset") == extra_token_id or p.get("tokenId") == extra_token_id
+            ),
+            None,
+        )
+        if extra_pos is None:
+            logger.info(
+                "%s extra position %s no longer open — removing from tracking",
+                st.tag, extra_token_id[:20],
+            )
+            st.extra_token_ids.remove(extra_token_id)
+            continue
+
+        e_avg = float(extra_pos.get("avgPrice") or 0)
+        e_cur = float(extra_pos.get("curPrice") or 0)
+        e_size = float(extra_pos.get("size") or 0)
+        if e_avg <= 0 or e_size <= 0:
+            continue
+
+        e_pnl_pct = (e_cur - e_avg) / e_avg * 100.0
+        logger.info(
+            "%s MONITOR-EXTRA %s: avg=%.4f cur=%.4f size=%.2f pnl=%.2f%%",
+            st.tag, extra_token_id[:20], e_avg, e_cur, e_size, e_pnl_pct,
+        )
+
+        # Expiry
+        if st.market_end_date:
+            try:
+                end_dt = datetime.fromisoformat(st.market_end_date.replace("Z", "+00:00"))
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
+                if end_dt <= datetime.now(timezone.utc):
+                    sell_price = max(0.0001, min(0.9999, round(e_cur - 0.01, 4)))
+                    logger.warning(
+                        "%s extra position expired — closing %s at %.4f (pnl=%.2f%%)",
+                        st.tag, extra_token_id[:20], sell_price, e_pnl_pct,
+                    )
+                    try:
+                        resp = await asyncio.to_thread(pm_create_order, extra_token_id, sell_price, e_size, "SELL")
+                    except Exception as exc:
+                        logger.error("%s extra expiry close error: %s", st.tag, exc)
+                        continue
+                    if resp.get("success"):
+                        st.extra_token_ids.remove(extra_token_id)
+                        logger.info("%s extra expiry close order placed id=%s", st.tag, resp.get("orderID"))
+                    else:
+                        logger.error("%s extra expiry close rejected: %s", st.tag, resp.get("errorMsg", resp))
+                    continue
+            except Exception:
+                pass
+
+        # Stop-loss
+        if e_pnl_pct <= STOP_LOSS_PCT:
+            sell_price = max(0.0001, min(0.9999, round(e_cur - 0.01, 4)))
+            logger.warning(
+                "%s STOP-LOSS on extra %s at %.1f%% — closing at %.4f",
+                st.tag, extra_token_id[:20], e_pnl_pct, sell_price,
+            )
+            try:
+                resp = await asyncio.to_thread(pm_create_order, extra_token_id, sell_price, e_size, "SELL")
+            except Exception as exc:
+                logger.error("%s extra stop-loss close error: %s", st.tag, exc)
+                continue
+            if resp.get("success"):
+                st.extra_token_ids.remove(extra_token_id)
+                logger.info("%s extra stop-loss close order placed id=%s", st.tag, resp.get("orderID"))
+            else:
+                logger.error("%s extra stop-loss close rejected: %s", st.tag, resp.get("errorMsg", resp))
+            continue
+
+        # Profit target
+        if e_pnl_pct >= PROFIT_TARGET_PCT:
+            sell_price = max(0.0001, min(0.9999, round(e_cur - 0.01, 4)))
+            logger.info(
+                "%s %.1f%% profit on extra %s — closing at %.4f",
+                st.tag, e_pnl_pct, extra_token_id[:20], sell_price,
+            )
+            try:
+                resp = await asyncio.to_thread(pm_create_order, extra_token_id, sell_price, e_size, "SELL")
+            except Exception as exc:
+                logger.error("%s extra profit close error: %s", st.tag, exc)
+                continue
+            if resp.get("success"):
+                st.extra_token_ids.remove(extra_token_id)
+                logger.info("%s extra profit close order placed id=%s", st.tag, resp.get("orderID"))
+            else:
+                logger.error("%s extra profit close rejected: %s", st.tag, resp.get("errorMsg", resp))
 
     if pnl_pct < PROFIT_TARGET_PCT:
         return  # not yet profitable enough — keep waiting
@@ -418,7 +535,7 @@ async def _monitor_position(st: _AssetState) -> None:
         return
 
     logger.info("%s close order placed id=%s — resuming SCANNING", st.tag, resp.get("orderID"))
-    st.reset()
+    st.close_and_promote()
 
 
 def _market_info_for_token(token_id: str) -> dict:
@@ -511,31 +628,42 @@ async def _resume_if_position_open(st: _AssetState) -> None:
                 st.active_outcome = "UNKNOWN"
                 if not st.market_end_date:
                     st.market_end_date = info["end_date"]
-                return
+                break  # found primary; continue to Step 2 to collect any extra filled positions
     except Exception as exc:
         logger.warning("%s startup open-order check failed: %s", st.tag, exc)
 
-    # --- Step 2: look for a filled (held) position ---
+    # --- Step 2: look for filled (held) positions ---
+    # Always runs so extras are collected even when Step 1 already set the primary.
     try:
         positions = await asyncio.to_thread(pm_fetch_positions, True)
         for pos in positions:
             token_id = pos.get("asset") or pos.get("tokenId") or ""
             if not token_id:
                 continue
+            if token_id == st.active_token_id:
+                continue  # already tracked as primary
             info = await asyncio.to_thread(_market_info_for_token, token_id)
             if _question_matches_asset(info["question"] or "", st.asset):
                 avg = float(pos.get("avgPrice") or 0)
-                logger.info(
-                    "%s found existing position token=%s avg=%.4f — resuming MONITORING",
-                    st.tag, token_id[:20], avg,
-                )
-                st.state = "MONITORING"
-                st.active_token_id = token_id
-                st.active_order_id = None  # already filled; nothing to cancel
-                st.active_outcome = "UNKNOWN"
-                if not st.market_end_date:
-                    st.market_end_date = info["end_date"]
-                return
+                if st.active_token_id is None:
+                    # No primary yet — set this as primary
+                    logger.info(
+                        "%s found existing position token=%s avg=%.4f — resuming MONITORING",
+                        st.tag, token_id[:20], avg,
+                    )
+                    st.state = "MONITORING"
+                    st.active_token_id = token_id
+                    st.active_order_id = None
+                    st.active_outcome = "UNKNOWN"
+                    if not st.market_end_date:
+                        st.market_end_date = info["end_date"]
+                else:
+                    # Primary already set — track this as an extra
+                    logger.info(
+                        "%s found additional position token=%s avg=%.4f — tracking alongside primary",
+                        st.tag, token_id[:20], avg,
+                    )
+                    st.extra_token_ids.append(token_id)
     except Exception as exc:
         logger.warning("%s startup position check failed: %s", st.tag, exc)
 
