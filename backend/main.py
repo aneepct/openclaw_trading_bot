@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Security
+from fastapi import FastAPI, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 
@@ -101,40 +101,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ---------------------------------------------------------------------------
-# API-key dependencies — defined early so all route decorators can reference them
-# ---------------------------------------------------------------------------
-
-_api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
-
-
-async def _require_api_key(api_key: str | None = Security(_api_key_header)):
-    """Dependency: reject requests that don't supply the correct x-api-key header."""
-    expected = app_config.POLYMARKET_API_KEY
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="POLYMARKET_API_KEY is not configured on the server.",
-        )
-    if api_key != expected:
-        raise HTTPException(status_code=401, detail="Invalid or missing x-api-key.")
-
-
-async def _require_internal_key(api_key: str | None = Security(_api_key_header)):
-    """Dependency: protect dashboard POST endpoints (scan, csv refresh, system-prompt writes).
-    Reads OPENCLAW_API_KEY from the server environment; the frontend sends it via
-    the REACT_APP_OPENCLAW_TOKEN build variable as the `x-api-key` header.
-    If the env var is not set, the endpoint returns 503 so the misconfiguration is obvious.
-    """
-    expected = app_config.OPENCLAW_API_KEY
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="OPENCLAW_API_KEY is not configured on the server.",
-        )
-    if api_key != expected:
-        raise HTTPException(status_code=401, detail="Invalid or missing x-api-key.")
 
 
 @app.get("/")
@@ -261,7 +227,7 @@ async def get_provider_system_prompt(provider: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/agent/system-prompt/{provider}", dependencies=[Security(_require_internal_key)])
+@app.post("/agent/system-prompt/{provider}")
 async def update_provider_system_prompt(provider: str, payload: SystemPromptPayload):
     """Persist a provider-specific system prompt and update in-memory config."""
     if provider not in _PROVIDER_PROMPT_FILES:
@@ -377,7 +343,7 @@ async def get_agent_summary(limit: int = 22, force: bool = False):
             raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/refresh/csv", dependencies=[Security(_require_internal_key)])
+@app.post("/refresh/csv")
 async def trigger_csv_refresh():
     """Run CSV export scripts, refresh the CSV-derived snapshot, then email all CSVs."""
     cfg = make_default_cfg()
@@ -393,13 +359,7 @@ async def trigger_csv_refresh():
     return {"ok": True, "refreshed_at": datetime.utcnow().isoformat()}
 
 
-@app.get("/scan")
-async def trigger_scan_get():
-    """Run live Deribit + Polymarket API scan (persists to DB). Matrix uses CSV+LLM via /refresh/csv."""
-    return await trigger_scan()
-
-
-@app.post("/scan", dependencies=[Security(_require_internal_key)])
+@app.api_route("/scan", methods=["GET", "POST"])
 async def trigger_scan():
     """Run live Deribit + Polymarket API scan (persists to DB). Matrix uses CSV+LLM via /refresh/csv."""
     async with _scan_lock:
@@ -597,6 +557,20 @@ async def health():
 # ---------------------------------------------------------------------------
 # Polymarket trading endpoints
 # ---------------------------------------------------------------------------
+
+_api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
+
+
+async def _require_api_key(api_key: str | None = Security(_api_key_header)):
+    """Dependency: reject requests that don't supply the correct x-api-key header."""
+    expected = app_config.POLYMARKET_API_KEY
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="POLYMARKET_API_KEY is not configured on the server.",
+        )
+    if api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing x-api-key.")
 
 
 from clients.polymarket_trading import (
@@ -824,26 +798,3 @@ async def update_closing_order(payload: UpdateClosingOrderRequest):
     except Exception as e:
         logger.exception("Error in /polymarket/orders/update-close")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------------------
-# Catch-all — block mutation methods on any unregistered path
-# ---------------------------------------------------------------------------
-# This MUST be the last route registered so real routes always win first.
-# Any POST / PUT / PATCH / DELETE to an unknown path returns 405 instead of
-# being silently accepted or returning a generic 404.
-
-@app.api_route(
-    "/{path:path}",
-    methods=["POST", "PUT", "PATCH", "DELETE"],
-    include_in_schema=False,
-)
-async def block_unknown_mutations(path: str, request: Request):
-    logger.warning(
-        "Blocked disallowed %s request to /%s from %s",
-        request.method, path, request.client.host if request.client else "unknown",
-    )
-    return JSONResponse(
-        status_code=405,
-        content={"detail": f"Method {request.method} not allowed on this endpoint."},
-    )

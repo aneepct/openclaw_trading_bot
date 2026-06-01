@@ -30,7 +30,6 @@ services:
       - POLYMARKET_API_KEY=${POLYMARKET_API_KEY}
       - POLYMARKET_CLOB_API=${POLYMARKET_CLOB_API:-https://clob.polymarket.com}
       - POLYMARKET_DATA_API=${POLYMARKET_DATA_API:-https://data-api.polymarket.com}
-      - OPENCLAW_API_KEY=${OPENCLAW_API_KEY}
     healthcheck:
       test:
         [
@@ -50,7 +49,6 @@ services:
       dockerfile: Dockerfile
       args:
         - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8000}
-        - REACT_APP_OPENCLAW_TOKEN=${OPENCLAW_API_KEY}
     container_name: trading_frontend
     restart: unless-stopped
     ports:
