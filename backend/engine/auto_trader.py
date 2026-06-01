@@ -124,7 +124,38 @@ async def _scan_and_trade(st: _AssetState) -> bool:
     Returns True and transitions to MONITORING if an order is placed.
     """
     from csv_signals import get_latest_signals
-    from clients.polymarket_trading import create_order as pm_create_order
+    from clients.polymarket_trading import (
+        create_order as pm_create_order,
+        fetch_open_orders as pm_fetch_open_orders,
+    )
+
+    # Guard: do not open a new position if an unfilled BUY order is already live.
+    # This prevents duplicate orders if the state machine gets out of sync.
+    try:
+        open_orders = await asyncio.to_thread(pm_fetch_open_orders)
+        for order in open_orders:
+            if (order.get("side") or "").upper() != "BUY":
+                continue
+            token_id = order.get("asset_id") or order.get("tokenId") or ""
+            if not token_id:
+                continue
+            info = await asyncio.to_thread(_market_info_for_token, token_id)
+            if _question_matches_asset(info["question"] or "", st.asset):
+                order_id = order.get("id") or order.get("orderID") or ""
+                logger.warning(
+                    "%s aborting scan — existing open BUY order id=%s found; "
+                    "switching to MONITORING",
+                    st.tag, order_id[:20],
+                )
+                st.state = "MONITORING"
+                st.active_token_id = token_id
+                st.active_order_id = order_id
+                st.active_outcome = "UNKNOWN"
+                if not st.market_end_date:
+                    st.market_end_date = info["end_date"]
+                return False
+    except Exception as exc:
+        logger.warning("%s pre-scan open-order check failed: %s", st.tag, exc)
 
     signals = get_latest_signals()
 
