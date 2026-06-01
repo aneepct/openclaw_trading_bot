@@ -337,6 +337,11 @@ async def scan_once() -> list[dict]:
         spot_prices[currency] = await get_index_price(f"{currency.lower()}_usd")
 
     strike_tol = config.STRIKE_TOLERANCE_PCT / 100.0
+
+    # Cache order books within a scan — the same T1/T2 instrument can appear
+    # across multiple Polymarket markets, so only fetch each one once.
+    _book_cache: dict[str, Optional[dict]] = {}
+
     for poly in poly_markets:
         currency = poly["_currency"]
         target_price = poly["_parsed_price"]
@@ -386,7 +391,10 @@ async def scan_once() -> list[dict]:
         async def get_book(inst: Optional[dict]):
             if inst is None:
                 return None
-            return await get_order_book(inst["instrument_name"], depth=config.DERIBIT_DEPTH)
+            name = inst["instrument_name"]
+            if name not in _book_cache:
+                _book_cache[name] = await get_order_book(name, depth=config.DERIBIT_DEPTH)
+            return _book_cache[name]
 
         if is_range:
             book1, book2, book1_high, book2_high = await asyncio.gather(
