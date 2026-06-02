@@ -635,7 +635,7 @@ async def get_market_by_slug(slug: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/polymarket/positions", dependencies=[Security(_require_api_key)])
+@app.get("/polymarket/positions")
 async def list_positions(open_only: bool = True):
     """
     Return Polymarket positions for the configured funder wallet.
