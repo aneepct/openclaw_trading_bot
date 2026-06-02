@@ -20,7 +20,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -200,8 +200,9 @@ async def _scan_and_trade(st: _AssetState) -> bool:
 
     signals = get_latest_signals()
 
-    # Only trade markets resolving TODAY (UTC). Skip if only tomorrow's market exists.
-    today_utc = datetime.now(timezone.utc).date()
+    # Only trade markets resolving TODAY (UTC) + 6-hour lookahead so markets
+    # expiring around 16:00 UTC are still picked up even as the window narrows.
+    today_utc = (datetime.now(timezone.utc) + timedelta(hours=6)).date()
 
     def _resolves_today(s: dict) -> bool:
         raw = s.get("market_resolution_at") or ""
