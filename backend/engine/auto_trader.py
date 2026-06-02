@@ -48,6 +48,7 @@ class _AssetState:
     active_token_id: Optional[str] = None
     active_order_id: Optional[str] = None
     active_outcome: Optional[str] = None  # "YES" or "NO"
+    active_sell_order_id: Optional[str] = None  # SELL order in flight to close position; cleared on fill
     market_end_date: Optional[str] = None  # endDate ISO datetime from Gamma API (e.g. "2026-06-01T16:00:00Z")
     extra_token_ids: list = field(default_factory=list)  # additional filled positions to monitor alongside primary
 
@@ -60,6 +61,7 @@ class _AssetState:
         self.active_token_id = None
         self.active_order_id = None
         self.active_outcome = None
+        self.active_sell_order_id = None
         self.market_end_date = None
         self.extra_token_ids = []
 
@@ -68,6 +70,7 @@ class _AssetState:
         if self.extra_token_ids:
             self.active_token_id = self.extra_token_ids.pop(0)
             self.active_order_id = None
+            self.active_sell_order_id = None
             self.active_outcome = "UNKNOWN"
             # state stays MONITORING; market_end_date stays (same asset)
         else:
@@ -341,6 +344,14 @@ async def _monitor_position(st: _AssetState) -> None:
     )
 
     if pos is None:
+        # If a SELL order was in flight, the position disappearing means it filled.
+        if st.active_sell_order_id:
+            logger.info(
+                "%s SELL order %s filled — position closed",
+                st.tag, st.active_sell_order_id[:20],
+            )
+            st.close_and_promote()
+            return
         # Order placed but not filled within the 60 s window — cancel and re-scan.
         if st.active_order_id:
             logger.info(
@@ -390,6 +401,22 @@ async def _monitor_position(st: _AssetState) -> None:
         st.tag, (st.active_token_id or "")[:20], avg, cur, size, pnl_pct,
     )
 
+    # If a SELL order is in flight but the position is still open, it didn't fill —
+    # cancel it and re-place at the current price if conditions still warrant closing.
+    if st.active_sell_order_id:
+        logger.info(
+            "%s SELL order %s not filled — cancelling to re-place at current price",
+            st.tag, st.active_sell_order_id[:20],
+        )
+        try:
+            await asyncio.to_thread(pm_cancel_order, st.active_sell_order_id)
+            st.active_sell_order_id = None
+        except Exception as exc:
+            logger.warning(
+                "%s cancel SELL failed (%s) — will retry next cycle", st.tag, exc
+            )
+            return
+
     # Close immediately if market has reached its resolution time
     logger.info(
         "%s expiry check: market_end_date=%s now_utc=%s",
@@ -417,10 +444,10 @@ async def _monitor_position(st: _AssetState) -> None:
                     logger.error("%s expiry close order rejected: %s", st.tag, resp.get("errorMsg", resp))
                     return
                 logger.info(
-                    "%s expiry close order placed id=%s — resuming SCANNING",
+                    "%s expiry close order placed id=%s — waiting for fill",
                     st.tag, resp.get("orderID"),
                 )
-                st.close_and_promote()
+                st.active_sell_order_id = resp.get("orderID")
                 return
         except Exception:
             pass
@@ -443,9 +470,9 @@ async def _monitor_position(st: _AssetState) -> None:
             logger.error("%s stop-loss order rejected: %s", st.tag, resp.get("errorMsg", resp))
             return
         logger.info(
-            "%s stop-loss order placed id=%s — resuming SCANNING", st.tag, resp.get("orderID")
+            "%s stop-loss order placed id=%s — waiting for fill", st.tag, resp.get("orderID")
         )
-        st.close_and_promote()
+        st.active_sell_order_id = resp.get("orderID")
         return
 
     # Monitor any extra positions tracked alongside the primary one.
@@ -546,6 +573,7 @@ async def _monitor_position(st: _AssetState) -> None:
 
     # 5 % (or more) profit reached — close position
     sell_price = max(0.0001, min(0.9999, round(cur - 0.01, 4)))
+
     logger.info("%s %.1f%% profit reached — closing at %.4f", st.tag, pnl_pct, sell_price)
 
     try:
@@ -560,8 +588,8 @@ async def _monitor_position(st: _AssetState) -> None:
         logger.error("%s close order rejected: %s", st.tag, resp.get("errorMsg", resp))
         return
 
-    logger.info("%s close order placed id=%s — resuming SCANNING", st.tag, resp.get("orderID"))
-    st.close_and_promote()
+    logger.info("%s close order placed id=%s — waiting for fill", st.tag, resp.get("orderID"))
+    st.active_sell_order_id = resp.get("orderID")
 
 
 def _market_info_for_token(token_id: str) -> dict:
