@@ -425,6 +425,10 @@ DERIBIT_CSV_TTL_S: int = 60  # seconds before we allow a fresh Deribit export
 # Maps asset_key ("btc" / "eth") → epoch-seconds of last successful export
 _deribit_last_export: dict[str, float] = {}
 
+POLYMARKET_CSV_TTL_S: int = 60  # seconds before we allow a fresh Polymarket export
+# Single key — one script exports both BTC and ETH together
+_polymarket_last_export: float = 0.0
+
 _BACKEND_ROOT = Path(__file__).resolve().parent
 
 _CSV_MAP: dict[str, Path] = {
@@ -558,11 +562,30 @@ async def download_polymarket_csv(asset: str):
     if path is None:
         raise HTTPException(status_code=400, detail=f"Unknown asset: {asset}. Use btc or eth.")
 
-    try:
-        await _run_polymarket_export()
-    except Exception as e:
-        logger.exception("Polymarket export failed for %s", asset_key)
-        raise HTTPException(status_code=502, detail=f"Polymarket export failed: {e}")
+    global _polymarket_last_export
+    now = time.time()
+    age = now - _polymarket_last_export
+    if age >= POLYMARKET_CSV_TTL_S or not path.exists():
+        logger.info(
+            "[csv_endpoint] Polymarket export triggered (age=%.0fs, ttl=%ds)",
+            age, POLYMARKET_CSV_TTL_S,
+        )
+        try:
+            await _run_polymarket_export()
+            _polymarket_last_export = time.time()
+        except Exception as e:
+            logger.exception("Polymarket export failed for %s", asset_key)
+            if path.exists():
+                logger.warning(
+                    "[csv_endpoint] Serving stale Polymarket %s CSV (export failed: %s)", asset_key, e
+                )
+            else:
+                raise HTTPException(status_code=502, detail=f"Polymarket export failed: {e}")
+    else:
+        logger.info(
+            "[csv_endpoint] Polymarket CSV cache hit (age=%.0fs < ttl=%ds) — skipping export",
+            age, POLYMARKET_CSV_TTL_S,
+        )
 
     filename = f"polymarket_{asset_key}_today.csv"
     return _serve_csv(path, filename)
