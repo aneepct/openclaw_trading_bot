@@ -36,6 +36,14 @@ MIN_SHARES = 5.0         # Polymarket CLOB minimum order size
 PROFIT_TARGET_PCT = 5.0  # close when P&L % >= this value
 SCAN_INTERVAL_S = 60     # seconds between scans / position checks
 
+# Exit rule constants — keep in sync with algorithms_2026-05-28.py (spec v1.1)
+MIN_FAIR_PROB             = 0.51   # exit if Deribit fair for held side drops below this
+EARLY_COLLAPSE_WINDOW_S   = 600    # 10 minutes after fill
+EARLY_COLLAPSE_EDGE_THOLD = 0.01   # |edge| <= 1pp within window → early-collapse exit
+# P&L stop-loss — retained only for extra positions that lack signal context.
+# Primary position exits use signal-based rules (see _check_signal_exit).
+STOP_LOSS_PCT = -50.0
+
 
 # ---------------------------------------------------------------------------
 # Per-asset state — each loop owns one instance; no sharing → no races
@@ -51,6 +59,9 @@ class _AssetState:
     active_sell_order_id: Optional[str] = None  # SELL order in flight to close position; cleared on fill
     market_end_date: Optional[str] = None  # endDate ISO datetime from Gamma API (e.g. "2026-06-01T16:00:00Z")
     extra_token_ids: list = field(default_factory=list)  # additional filled positions to monitor alongside primary
+    active_market_id: Optional[str] = None      # Gamma/Polymarket market ID for signal lookup during monitoring
+    entry_edge: Optional[float] = None           # signed edge (fraction) at order placement; for sign-flip exit rule
+    fill_time: Optional[str] = None              # ISO UTC datetime when BUY fill was first confirmed
 
     @property
     def tag(self) -> str:
@@ -64,6 +75,9 @@ class _AssetState:
         self.active_sell_order_id = None
         self.market_end_date = None
         self.extra_token_ids = []
+        self.active_market_id = None
+        self.entry_edge = None
+        self.fill_time = None
 
     def close_and_promote(self) -> None:
         """After closing the active position, promote the next extra if any; else reset to SCANNING."""
@@ -72,6 +86,9 @@ class _AssetState:
             self.active_order_id = None
             self.active_sell_order_id = None
             self.active_outcome = "UNKNOWN"
+            self.active_market_id = None
+            self.entry_edge = None
+            self.fill_time = None
             # state stays MONITORING; market_end_date stays (same asset)
         else:
             self.reset()
@@ -307,6 +324,12 @@ async def _scan_and_trade(st: _AssetState) -> bool:
     st.active_token_id = token_id
     st.active_order_id = order_id
     st.active_outcome = outcome
+    st.active_market_id = market_id
+    if outcome == "YES":
+        st.entry_edge = round(deribit_prob - poly_price, 6)
+    else:
+        st.entry_edge = round((1.0 - deribit_prob) - (1.0 - poly_price), 6)
+    st.fill_time = None  # will be set when fill is confirmed in _monitor_position
     if not st.market_end_date:
         st.market_end_date = best.get("market_resolution_at") or None
     return True
@@ -316,7 +339,79 @@ async def _scan_and_trade(st: _AssetState) -> bool:
 # MONITORING phase
 # ---------------------------------------------------------------------------
 
-async def _monitor_position(st: _AssetState) -> None:
+def _check_signal_exit(st: "_AssetState", current_pm_price: float) -> Optional[str]:
+    """
+    Apply spec v1.1 signal-based exit predicates (algorithms_2026-05-28.py / evaluate_exit).
+    Returns an exit reason string if a rule fires, or None to HOLD.
+
+    Rules checked (in priority order):
+      1. Signal absent from CSV          → Deribit conviction gone
+      2. Deribit fair for held side      < MIN_FAIR_PROB (0.51)
+      3. Edge sign flip vs entry_edge stored at order placement
+      4. Early-collapse: |edge| <= 1pp within EARLY_COLLAPSE_WINDOW_S of fill
+
+    Market-resolved exit is handled separately via market_end_date.
+    Requires st.active_market_id and st.active_outcome ("YES"/"NO") to be set;
+    skips gracefully if either is absent (e.g. resumed from startup).
+    """
+    if st.active_outcome not in ("YES", "NO") or not st.active_market_id:
+        return None
+
+    from csv_signals import get_latest_signals
+    try:
+        signals = get_latest_signals()
+    except Exception:
+        return None
+
+    match = next(
+        (s for s in signals if s.get("polymarket_market_id") == st.active_market_id),
+        None,
+    )
+    if match is None:
+        # Signal no longer published — Deribit conviction has gone.
+        logger.info(
+            "[auto_trader/%s] signal for market %s absent from CSV — treating as conviction gone",
+            st.asset, st.active_market_id,
+        )
+        return "signal_not_in_csv"
+
+    try:
+        deribit_prob_yes = float(match.get("deribit_prob") or 0)
+    except (TypeError, ValueError):
+        return None
+
+    current_fair = deribit_prob_yes if st.active_outcome == "YES" else 1.0 - deribit_prob_yes
+
+    # Rule 1: Deribit fair below conviction threshold.
+    if current_fair < MIN_FAIR_PROB:
+        return f"deribit_fair_{current_fair:.3f}_lt_{MIN_FAIR_PROB}"
+
+    # Rules 2 & 3 require entry_edge recorded at order time.
+    if st.entry_edge is None:
+        return None  # resumed from startup without entry context — skip
+
+    current_edge = current_fair - current_pm_price
+
+    # Rule 2: edge sign has flipped — trade has turned against us.
+    if (st.entry_edge > 0 and current_edge < 0) or (st.entry_edge < 0 and current_edge > 0):
+        return f"edge_sign_flip_entry_{st.entry_edge:.3f}_now_{current_edge:.3f}"
+
+    # Rule 3: early-collapse — edge went flat within 10 min of fill.
+    if st.fill_time:
+        try:
+            fill_dt = datetime.fromisoformat(st.fill_time)
+            if fill_dt.tzinfo is None:
+                fill_dt = fill_dt.replace(tzinfo=timezone.utc)
+            elapsed_s = (datetime.now(timezone.utc) - fill_dt).total_seconds()
+            if elapsed_s <= EARLY_COLLAPSE_WINDOW_S and abs(current_edge) <= EARLY_COLLAPSE_EDGE_THOLD:
+                return f"early_collapse_edge_{abs(current_edge):.3f}_at_{int(elapsed_s)}s"
+        except Exception:
+            pass
+
+    return None
+
+
+async def _monitor_position(st: "_AssetState") -> None:
     """
     Check the open position for the active token. Close when 5 % profit reached.
     If the order is still unfilled, cancel and immediately re-scan.
@@ -396,6 +491,15 @@ async def _monitor_position(st: _AssetState) -> None:
     if avg <= 0 or size <= 0:
         return
 
+    # Detect BUY fill: first monitor cycle where position is present while a BUY order ID is held.
+    if st.active_order_id is not None:
+        logger.info(
+            "%s BUY order %s fill confirmed — position established",
+            st.tag, st.active_order_id[:20],
+        )
+        st.fill_time = datetime.now(timezone.utc).isoformat()
+        st.active_order_id = None
+
     pnl_pct = (cur - avg) / avg * 100.0
     logger.info(
         "%s MONITOR %s: avg=%.4f cur=%.4f size=%.2f pnl=%.2f%%",
@@ -453,25 +557,28 @@ async def _monitor_position(st: _AssetState) -> None:
         except Exception:
             pass
 
-    # Stop-loss: close immediately if loss exceeds 50 %
-    STOP_LOSS_PCT = -50.0
-    if pnl_pct <= STOP_LOSS_PCT:
+    # --- Signal-based exit (spec v1.1 + early-collapse rule 2026-05-25) ---
+    # Replaces the P&L stop-loss. Exits when Deribit conviction is gone,
+    # the edge has flipped, or the early-collapse rule fires.
+    _exit_reason = _check_signal_exit(st, cur)
+    if _exit_reason:
         sell_price = max(0.0001, min(0.9999, round(cur - 0.01, 4)))
         logger.warning(
-            "%s STOP-LOSS triggered at %.1f%% — closing at %.4f", st.tag, pnl_pct, sell_price
+            "%s signal-exit triggered (%s) pnl=%.2f%% — closing at %.4f",
+            st.tag, _exit_reason, pnl_pct, sell_price,
         )
         try:
             resp = await asyncio.to_thread(
                 pm_create_order, st.active_token_id, sell_price, size, "SELL"
             )
         except Exception as exc:
-            logger.error("%s stop-loss order error: %s", st.tag, exc)
+            logger.error("%s signal-exit order error: %s", st.tag, exc)
             return
         if not resp.get("success"):
-            logger.error("%s stop-loss order rejected: %s", st.tag, resp.get("errorMsg", resp))
+            logger.error("%s signal-exit order rejected: %s", st.tag, resp.get("errorMsg", resp))
             return
         logger.info(
-            "%s stop-loss order placed id=%s — waiting for fill", st.tag, resp.get("orderID")
+            "%s signal-exit order placed id=%s — waiting for fill", st.tag, resp.get("orderID")
         )
         st.active_sell_order_id = resp.get("orderID")
         return
