@@ -414,8 +414,16 @@ async def download_csvs():
 
 
 # ---------------------------------------------------------------------------
-# Individual CSV download endpoints  (always fetch fresh data first)
+# Individual CSV download endpoints
+# Cache: if the CSV was exported within DERIBIT_CSV_TTL_S seconds, serve the
+# existing file instead of hitting Deribit again.  This prevents the dashboard
+# (which polls every 60s) from stacking requests on top of the auto-refresh
+# loop and causing 429 / timeout errors.
 # ---------------------------------------------------------------------------
+
+DERIBIT_CSV_TTL_S: int = 60  # seconds before we allow a fresh Deribit export
+# Maps asset_key ("btc" / "eth") → epoch-seconds of last successful export
+_deribit_last_export: dict[str, float] = {}
 
 _BACKEND_ROOT = Path(__file__).resolve().parent
 
@@ -507,11 +515,31 @@ async def download_deribit_csv(asset: str, day: str):
     if script is None:
         raise HTTPException(status_code=400, detail=f"Unknown asset: {asset}. Use btc or eth.")
 
-    try:
-        await _run_export(script)
-    except Exception as e:
-        logger.exception("Deribit export failed for %s", asset_key)
-        raise HTTPException(status_code=502, detail=f"Deribit export failed: {e}")
+    now = time.time()
+    last = _deribit_last_export.get(asset_key, 0.0)
+    age = now - last
+    if age >= DERIBIT_CSV_TTL_S or not path.exists():
+        logger.info(
+            "[csv_endpoint] Deribit %s export triggered (age=%.0fs, ttl=%ds)",
+            asset_key, age, DERIBIT_CSV_TTL_S,
+        )
+        try:
+            await _run_export(script)
+            _deribit_last_export[asset_key] = time.time()
+        except Exception as e:
+            logger.exception("Deribit export failed for %s", asset_key)
+            # If a stale CSV exists, serve it rather than returning a 502
+            if path.exists():
+                logger.warning(
+                    "[csv_endpoint] Serving stale %s CSV (export failed: %s)", asset_key, e
+                )
+            else:
+                raise HTTPException(status_code=502, detail=f"Deribit export failed: {e}")
+    else:
+        logger.info(
+            "[csv_endpoint] Deribit %s CSV cache hit (age=%.0fs < ttl=%ds) — skipping export",
+            asset_key, age, DERIBIT_CSV_TTL_S,
+        )
 
     filename = f"deribit_{asset_key}_{day_key}_depth{app_config.DERIBIT_DEPTH}.csv"
     return _serve_csv(path, filename)
