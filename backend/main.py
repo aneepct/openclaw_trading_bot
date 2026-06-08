@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 from agents.openai_agent import build_agent_summary
 import memory_store as db_module
 from memory_store import get_leaderboard, get_recent_signals, init_db
-import trade_store as _trade_store
+try:
+    import trade_store as _trade_store
+except ModuleNotFoundError:
+    _trade_store = None
 import engine.scanner as scanner_module
 from engine.scanner import scan_once, ticker_loop, _scan_lock
 from engine.auto_trader import auto_trader_loop
@@ -71,7 +74,8 @@ def get_latest_signals():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    await asyncio.to_thread(_trade_store.init_trade_db)
+    if _trade_store is not None:
+        await asyncio.to_thread(_trade_store.init_trade_db)
     cfg = make_default_cfg()
     csv_task         = asyncio.create_task(csv_refresh_loop(cfg=cfg))
     email_task       = asyncio.create_task(email_scheduler_loop(cfg=cfg))
@@ -624,6 +628,8 @@ async def list_closed_trades(
         asset = asset.upper()
         if asset not in ("BTC", "ETH"):
             raise HTTPException(status_code=400, detail="asset must be 'BTC' or 'ETH'")
+    if _trade_store is None:
+        raise HTTPException(status_code=503, detail="trade_store module is not available in this deployment")
     try:
         result = await asyncio.to_thread(_trade_store.get_closed_trades, page, page_size, asset)
         return result
