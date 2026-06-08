@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 from agents.openai_agent import build_agent_summary
 import memory_store as db_module
 from memory_store import get_leaderboard, get_recent_signals, init_db
+import trade_store as _trade_store
 import engine.scanner as scanner_module
 from engine.scanner import scan_once, ticker_loop, _scan_lock
 from engine.auto_trader import auto_trader_loop
@@ -38,6 +39,7 @@ import config as app_config
 from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
 from csv_refresh import csv_refresh_loop, email_scheduler_loop, export_all_csvs, make_default_cfg
 from email_sender import collect_csv_paths, send_csv_report
+from clients.deribit import get_positions as _deribit_get_positions, get_all_positions as _deribit_get_all_positions
 
 _PROVIDER_PROMPT_FILES = {
     "openai": Path(__file__).parent / "prompts" / "openai_system_prompt.txt",
@@ -69,6 +71,7 @@ def get_latest_signals():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await asyncio.to_thread(_trade_store.init_trade_db)
     cfg = make_default_cfg()
     csv_task         = asyncio.create_task(csv_refresh_loop(cfg=cfg))
     email_task       = asyncio.create_task(email_scheduler_loop(cfg=cfg))
@@ -591,6 +594,44 @@ async def download_polymarket_csv(asset: str):
     return _serve_csv(path, filename)
 
 
+@app.get("/trades")
+async def list_closed_trades(
+    page: int = 1,
+    page_size: int = 20,
+    asset: str = None,
+):
+    """
+    Return a paginated log of every position the auto-trader has closed.
+
+    Query params:
+    - page       (default 1): 1-based page number.
+    - page_size  (default 20, max 100): records per page.
+    - asset      (optional): filter by 'BTC' or 'ETH'.
+
+    Response fields per trade:
+    - id, asset, market_question, market_id, token_id, outcome
+    - entry_price, exit_price, size, pnl_pct
+    - close_reason  — 'profit_target' | 'expiry' | 'stop_loss' | signal-exit reason string
+    - fill_time     — ISO UTC when BUY was confirmed filled (null if unknown)
+    - closed_at     — ISO UTC when SELL order was placed
+    - sell_order_id
+    """
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if not (1 <= page_size <= 100):
+        raise HTTPException(status_code=400, detail="page_size must be between 1 and 100")
+    if asset is not None:
+        asset = asset.upper()
+        if asset not in ("BTC", "ETH"):
+            raise HTTPException(status_code=400, detail="asset must be 'BTC' or 'ETH'")
+    try:
+        result = await asyncio.to_thread(_trade_store.get_closed_trades, page, page_size, asset)
+        return result
+    except Exception as e:
+        logger.exception("Error in /trades")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health")
 async def health():
     try:
@@ -706,6 +747,46 @@ async def list_positions(open_only: bool = True):
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.exception("Error in /polymarket/positions")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/deribit/positions")
+async def list_deribit_positions(kind: str = "future"):
+    """Return Deribit account positions for currency=any."""
+    try:
+        positions = await _deribit_get_all_positions(kind)
+        return {
+            "currency": "any",
+            "kind": kind.lower(),
+            "positions": positions,
+            "total": len(positions),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /deribit/positions")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/deribit/positions/{currency}")
+async def list_deribit_positions_by_currency(currency: str, kind: str = "future"):
+    """Return Deribit account positions for a single currency (btc, eth, or any)."""
+    try:
+        positions = await _deribit_get_positions(currency, kind)
+        return {
+            "currency": currency.lower(),
+            "kind": kind.lower(),
+            "positions": positions,
+            "total": len(positions),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /deribit/positions/%s", currency)
         raise HTTPException(status_code=500, detail=str(e))
 
 

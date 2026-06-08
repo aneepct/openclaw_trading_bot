@@ -15,7 +15,7 @@ PROJECT_SLUG = "open-claw"  # recommended git / folder name; avoids clashing wit
 ASSETS = ["BTC", "ETH"]
 
 # ── Edge / Alpha threshold ───────────────────────────────────
-MIN_EDGE_PCT = 3.0                # Minimum edge % to flag as alpha signal
+MIN_EDGE_PCT = 5.0                # Minimum edge % to flag as alpha signal
 
 # ── Asymmetric payout filter (per doc) ───────────────────────
 # "Asymmetric payout >2x" means Polymarket YES price < 0.50
@@ -56,6 +56,26 @@ BACKEND_PORT  = 8000
 
 import os
 from pathlib import Path
+
+
+def _load_local_env() -> None:
+    """Load key=value pairs from backend/.env without overriding existing env vars."""
+    env_path = Path(__file__).resolve().parent / ".env"
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_local_env()
 
 # ── OpenAI agent layer ────────────────────────────────────────
 
@@ -118,3 +138,8 @@ POLYMARKET_FUNDER      = os.getenv("POLYMARKET_FUNDER", "").strip()
 POLYMARKET_CLOB_API    = os.getenv("POLYMARKET_CLOB_API", "https://clob.polymarket.com")
 POLYMARKET_DATA_API    = os.getenv("POLYMARKET_DATA_API", "https://data-api.polymarket.com")
 POLYMARKET_API_KEY     = os.getenv("POLYMARKET_API_KEY", "").strip()
+
+# ── Deribit private API ────────────────────────────────────────
+DERIBIT_API_KEY = os.getenv("DERIBIT_API_KEY", "").strip()
+DERIBIT_API_SECRET = os.getenv("DERIBIT_API_SECRET", "").strip()
+DERIBIT_SUBACCOUNT_ID = os.getenv("DERIBIT_SUBACCOUNT_ID", "").strip()

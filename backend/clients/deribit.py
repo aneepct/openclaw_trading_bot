@@ -2,7 +2,10 @@ import httpx
 import asyncio
 from typing import Optional
 
+import config as app_config
+
 BASE_URL = "https://www.deribit.com/api/v2/public"
+PRIVATE_BASE_URL = "https://www.deribit.com/api/v2"
 
 # Cap concurrent order-book fetches to avoid hitting Deribit's rate limit
 _DERIBIT_SEMAPHORE = asyncio.Semaphore(3)
@@ -82,3 +85,61 @@ async def _fetch_book(client: httpx.AsyncClient, instrument_name: str) -> Option
     resp.raise_for_status()
     data = resp.json()
     return data.get("result")
+
+
+async def _get_access_token(client: httpx.AsyncClient) -> str:
+    """Authenticate with Deribit using client credentials and return a bearer token."""
+    if not app_config.DERIBIT_API_KEY or not app_config.DERIBIT_API_SECRET:
+        raise RuntimeError("DERIBIT_API_KEY or DERIBIT_API_SECRET is not configured.")
+
+    resp = await client.get(
+        f"{PRIVATE_BASE_URL}/public/auth",
+        params={
+            "grant_type": "client_credentials",
+            "client_id": app_config.DERIBIT_API_KEY,
+            "client_secret": app_config.DERIBIT_API_SECRET,
+        },
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    result = payload.get("result") or {}
+    token = result.get("access_token")
+    if not token:
+        raise RuntimeError("Deribit auth succeeded without access_token.")
+    return token
+
+
+async def get_positions(currency: str = "any", kind: str = "future") -> list[dict]:
+    """
+    Return open Deribit positions.
+    Defaults to currency=any and kind=future.
+    """
+    cc = (currency or "any").strip().lower()
+    if cc not in {"btc", "eth", "any"}:
+        raise ValueError("currency must be btc, eth, or any")
+
+    kk = (kind or "future").strip().lower()
+    if kk not in {"future", "option"}:
+        raise ValueError("kind must be future or option")
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        token = await _get_access_token(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        params = {"currency": cc, "kind": kk}
+        if app_config.DERIBIT_SUBACCOUNT_ID:
+            params["subaccount_id"] = app_config.DERIBIT_SUBACCOUNT_ID
+
+        resp = await client.get(
+            f"{PRIVATE_BASE_URL}/private/get_positions",
+            headers=headers,
+            params=params,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        result = payload.get("result")
+        return result if isinstance(result, list) else []
+
+
+async def get_all_positions(kind: str = "future") -> list[dict]:
+    """Return Deribit positions using currency=any."""
+    return await get_positions("any", kind)
