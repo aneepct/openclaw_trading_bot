@@ -143,3 +143,32 @@ async def get_positions(currency: str = "any", kind: str = "future") -> list[dic
 async def get_all_positions(kind: str = "future") -> list[dict]:
     """Return Deribit positions using currency=any."""
     return await get_positions("any", kind)
+
+
+async def get_account_summary(currency: str = "BTC", extended: bool = True) -> dict:
+    """
+    Return Deribit account summary for the configured (sub)account.
+    Calls private/get_account_summary with optional extended greeks.
+    """
+    cc = (currency or "BTC").strip().upper()
+    if cc not in {"BTC", "ETH", "USDC", "USDT", "SOL"}:
+        raise ValueError("currency must be BTC, ETH, USDC, USDT, or SOL")
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        token = await _get_access_token(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        params: dict = {"currency": cc, "extended": str(extended).lower()}
+        if app_config.DERIBIT_SUBACCOUNT_ID:
+            params["subaccount_id"] = app_config.DERIBIT_SUBACCOUNT_ID
+
+        resp = await client.get(
+            f"{PRIVATE_BASE_URL}/private/get_account_summary",
+            headers=headers,
+            params=params,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("Unexpected response from get_account_summary")
+        return result
