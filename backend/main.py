@@ -598,6 +598,31 @@ async def download_polymarket_csv(asset: str):
     return _serve_csv(path, filename)
 
 
+@app.get("/polymarket/market")
+async def get_market_by_slug_query(slug: str):
+    """
+    Public market lookup endpoint.
+
+    Query param:
+    - slug: Polymarket market or event slug
+
+    Example:
+    - /polymarket/market?slug=will-the-price-of-bitcoin-be-less-than-72000-on-may-17
+    """
+    clean_slug = (slug or "").strip()
+    if not clean_slug:
+        raise HTTPException(status_code=400, detail="slug query parameter is required")
+
+    try:
+        markets = await asyncio.to_thread(_pm_resolve_slug, clean_slug)
+        return {"slug": clean_slug, "markets": markets, "total": len(markets)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/market?slug=%s", clean_slug)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/trades")
 async def list_closed_trades(
     page: int = 1,
