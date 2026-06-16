@@ -1,6 +1,8 @@
 import asyncio
 import io
+import json
 import logging
+import re
 import subprocess
 import sys
 import time
@@ -11,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -497,6 +500,135 @@ async def _run_polymarket_export() -> None:
     await asyncio.to_thread(_sync)
 
 
+def _pm_parse_maybe_json_list(v: Any) -> list[Any]:
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str):
+        try:
+            loaded = json.loads(v)
+            if isinstance(loaded, list):
+                return loaded
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def _pm_extract_end_date_iso(market: dict[str, Any]) -> str | None:
+    end = market.get("endDate") or market.get("endDateIso")
+    if not end:
+        return None
+    try:
+        # Keep date-only format aligned with CSV export rows.
+        return datetime.strptime(str(end)[:10], "%Y-%m-%d").isoformat()
+    except ValueError:
+        return None
+
+
+def _pm_extract_price_from_question(question: str) -> float | None:
+    q = (question or "").replace(",", "")
+    m = re.search(r"\$([\d.]+)\s*[kK]\b", q, re.IGNORECASE)
+    if m:
+        return float(m.group(1)) * 1000
+    m = re.search(r"\$([\d]{4,})\b", q)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"\b([\d.]+)\s*[kK]\b", q, re.IGNORECASE)
+    if m:
+        return float(m.group(1)) * 1000
+    m = re.search(r"\b([\d]{5,})\b", q)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def _pm_detect_currency(question: str, slug: str) -> str | None:
+    text = f"{question or ''} {slug or ''}".lower()
+    if "bitcoin" in text or "btc" in text:
+        return "BTC"
+    if "ethereum" in text or "eth" in text:
+        return "ETH"
+    return None
+
+
+def _pm_detect_option_type(question: str) -> str:
+    ql = (question or "").lower()
+    put_keywords = ("dip", "fall", "drop", "below", "under", "crash", "decline", "sink")
+    return "P" if any(keyword in ql for keyword in put_keywords) else "C"
+
+
+def _pm_extract_outcome_price0_raw(market: dict[str, Any]) -> float | None:
+    prices = _pm_parse_maybe_json_list(market.get("outcomePrices"))
+    if not prices:
+        return None
+    try:
+        return float(prices[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _pm_extract_liquidity(market: dict[str, Any]) -> float:
+    for key in ("liquidity", "liquidityNum", "volume", "volumeNum"):
+        value = market.get(key)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
+def _pm_fetch_markets_by_slug_raw(slug: str) -> list[dict[str, Any]]:
+    """Return market dicts for a market slug or event slug from Gamma API."""
+    gamma = app_config.POLYMARKET_BASE_URL
+
+    r = httpx.get(f"{gamma}/markets/slug/{slug}", timeout=10)
+    if r.status_code == 200:
+        raw = r.json()
+        if isinstance(raw, list):
+            return [m for m in raw if isinstance(m, dict)]
+        if isinstance(raw, dict):
+            return [raw]
+
+    r2 = httpx.get(f"{gamma}/events/slug/{slug}", timeout=10)
+    if r2.status_code != 200:
+        raise ValueError(
+            f"Market slug '{slug}' not found (markets→{r.status_code}, events→{r2.status_code})."
+        )
+    event = r2.json() or {}
+    markets = event.get("markets") or []
+    return [m for m in markets if isinstance(m, dict)]
+
+
+def _pm_markets_to_csv_like_rows(markets: list[dict[str, Any]], slug: str) -> list[dict[str, Any]]:
+    snapshot_at = datetime.utcnow().isoformat()
+    rows: list[dict[str, Any]] = []
+
+    for market in markets:
+        question = market.get("question") or ""
+        raw0 = _pm_extract_outcome_price0_raw(market)
+        if raw0 is None:
+            continue
+
+        market_id = str(market.get("id") or market.get("conditionId") or "")
+        rows.append(
+            {
+                "snapshot_at": snapshot_at,
+                "market_id": market_id,
+                "polymarket_question": question,
+                "currency": _pm_detect_currency(question, slug),
+                "option_type": _pm_detect_option_type(question),
+                "target_price_from_question": _pm_extract_price_from_question(question),
+                "end_date_iso": _pm_extract_end_date_iso(market),
+                "liquidity_usd": _pm_extract_liquidity(market),
+                "outcomePrices_0_scaled": raw0 * 100,
+                "outcomePrices_0_raw": raw0,
+            }
+        )
+    return rows
+
+
 def _serve_csv(path: Path, filename: str) -> StreamingResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"CSV not generated: {filename}")
@@ -614,8 +746,25 @@ async def get_market_by_slug_query(slug: str):
         raise HTTPException(status_code=400, detail="slug query parameter is required")
 
     try:
-        markets = await asyncio.to_thread(_pm_resolve_slug, clean_slug)
-        return {"slug": clean_slug, "markets": markets, "total": len(markets)}
+        markets = await asyncio.to_thread(_pm_fetch_markets_by_slug_raw, clean_slug)
+        rows = _pm_markets_to_csv_like_rows(markets, clean_slug)
+        return {
+            "slug": clean_slug,
+            "rows": rows,
+            "total": len(rows),
+            "schema": [
+                "snapshot_at",
+                "market_id",
+                "polymarket_question",
+                "currency",
+                "option_type",
+                "target_price_from_question",
+                "end_date_iso",
+                "liquidity_usd",
+                "outcomePrices_0_scaled",
+                "outcomePrices_0_raw",
+            ],
+        }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
