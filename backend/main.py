@@ -629,6 +629,40 @@ def _pm_markets_to_csv_like_rows(markets: list[dict[str, Any]], slug: str) -> li
     return rows
 
 
+def _pm_today_slug_from_alias(alias_slug: str) -> str:
+    """Convert '*-on-today' aliases to '*-on-{month}-{day}-{year}' in UTC."""
+    if not alias_slug.endswith("-on-today"):
+        return alias_slug
+
+    today = datetime.utcnow()
+    month = today.strftime("%B").lower()
+    day = str(today.day)
+    year = str(today.year)
+    return alias_slug.replace("-on-today", f"-on-{month}-{day}-{year}")
+
+
+async def _pm_slug_rows_response(slug: str) -> dict[str, Any]:
+    markets = await asyncio.to_thread(_pm_fetch_markets_by_slug_raw, slug)
+    rows = _pm_markets_to_csv_like_rows(markets, slug)
+    return {
+        "slug": slug,
+        "rows": rows,
+        "total": len(rows),
+        "schema": [
+            "snapshot_at",
+            "market_id",
+            "polymarket_question",
+            "currency",
+            "option_type",
+            "target_price_from_question",
+            "end_date_iso",
+            "liquidity_usd",
+            "outcomePrices_0_scaled",
+            "outcomePrices_0_raw",
+        ],
+    }
+
+
 def _serve_csv(path: Path, filename: str) -> StreamingResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"CSV not generated: {filename}")
@@ -746,29 +780,63 @@ async def get_market_by_slug_query(slug: str):
         raise HTTPException(status_code=400, detail="slug query parameter is required")
 
     try:
-        markets = await asyncio.to_thread(_pm_fetch_markets_by_slug_raw, clean_slug)
-        rows = _pm_markets_to_csv_like_rows(markets, clean_slug)
-        return {
-            "slug": clean_slug,
-            "rows": rows,
-            "total": len(rows),
-            "schema": [
-                "snapshot_at",
-                "market_id",
-                "polymarket_question",
-                "currency",
-                "option_type",
-                "target_price_from_question",
-                "end_date_iso",
-                "liquidity_usd",
-                "outcomePrices_0_scaled",
-                "outcomePrices_0_raw",
-            ],
-        }
+        return await _pm_slug_rows_response(clean_slug)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Error in /polymarket/market?slug=%s", clean_slug)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/polymarket/market/bitcoin-above-on-today")
+async def get_bitcoin_above_today_market():
+    alias = "bitcoin-above-on-today"
+    resolved_slug = _pm_today_slug_from_alias(alias)
+    try:
+        return await _pm_slug_rows_response(resolved_slug)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/market/%s", alias)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/polymarket/market/ethereum-above-on-today")
+async def get_ethereum_above_today_market():
+    alias = "ethereum-above-on-today"
+    resolved_slug = _pm_today_slug_from_alias(alias)
+    try:
+        return await _pm_slug_rows_response(resolved_slug)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/market/%s", alias)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/polymarket/market/bitcoin-price-on-today")
+async def get_bitcoin_price_today_market():
+    alias = "bitcoin-price-on-today"
+    resolved_slug = _pm_today_slug_from_alias(alias)
+    try:
+        return await _pm_slug_rows_response(resolved_slug)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/market/%s", alias)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/polymarket/market/ethereum-price-on-today")
+async def get_ethereum_price_today_market():
+    alias = "ethereum-price-on-today"
+    resolved_slug = _pm_today_slug_from_alias(alias)
+    try:
+        return await _pm_slug_rows_response(resolved_slug)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /polymarket/market/%s", alias)
         raise HTTPException(status_code=500, detail=str(e))
 
 
