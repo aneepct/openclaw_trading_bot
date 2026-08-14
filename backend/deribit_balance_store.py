@@ -60,13 +60,15 @@ def _to_float(v: Any) -> Optional[float]:
 
 
 def _estimate_usd(account: dict[str, Any]) -> Optional[float]:
-    # For BTC account summaries, Deribit commonly reports BTC-denominated equity.
-    # Estimate USD so downstream dashboards can mirror EMBEDDED_BALANCES shape.
-    equity = _to_float(account.get("equity"))
+    # Prefer margin_balance for dashboard daily balance parity.
+    # Fall back to equity when margin_balance is unavailable.
+    btc_balance = _to_float(account.get("margin_balance"))
+    if btc_balance is None:
+        btc_balance = _to_float(account.get("equity"))
     index_price = _to_float(account.get("index_price"))
-    if equity is None or index_price is None:
+    if btc_balance is None or index_price is None:
         return None
-    return equity * index_price
+    return btc_balance * index_price
 
 
 def record_balance_snapshot(

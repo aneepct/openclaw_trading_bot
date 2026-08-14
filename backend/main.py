@@ -45,7 +45,7 @@ import config as app_config
 from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
 from csv_refresh import csv_refresh_loop, email_scheduler_loop, export_all_csvs, make_default_cfg
 from email_sender import collect_csv_paths, send_csv_report
-from clients.deribit import get_positions as _deribit_get_positions, get_all_positions as _deribit_get_all_positions, get_account_summary as _deribit_get_account_summary
+from clients.deribit import get_positions as _deribit_get_positions, get_all_positions as _deribit_get_all_positions, get_account_summary as _deribit_get_account_summary, get_index_price as _deribit_get_index_price
 import deribit_balance_store
 
 _PROVIDER_PROMPT_FILES = {
@@ -83,6 +83,13 @@ def _seconds_until_next_midnight_utc(now: datetime | None = None) -> float:
 
 async def _record_deribit_balance_once(currency: str = "BTC") -> dict[str, Any]:
     summary = await _deribit_get_account_summary(currency, True)
+    if summary.get("index_price") in (None, ""):
+        try:
+            idx = await _deribit_get_index_price("btc_usd")
+            if idx is not None:
+                summary["index_price"] = idx
+        except Exception:
+            logger.warning("Could not fetch BTC index price fallback for USD estimation")
     ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     await asyncio.to_thread(deribit_balance_store.record_balance_snapshot, currency, summary, ts)
     latest = await asyncio.to_thread(deribit_balance_store.get_latest_balance, currency)
