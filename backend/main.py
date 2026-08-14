@@ -92,6 +92,7 @@ async def _record_deribit_balance_once(currency: str = "BTC") -> dict[str, Any]:
             logger.warning("Could not fetch BTC index price fallback for USD estimation")
     ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     await asyncio.to_thread(deribit_balance_store.record_balance_snapshot, currency, summary, ts)
+    await asyncio.to_thread(deribit_balance_store.refresh_and_store_performance, currency)
     latest = await asyncio.to_thread(deribit_balance_store.get_latest_balance, currency)
     return latest or {}
 
@@ -1121,27 +1122,40 @@ async def get_deribit_daily_balances(currency: str = "BTC", limit: int = 400, fe
             rows = await asyncio.to_thread(deribit_balance_store.get_daily_balances, currency, limit)
 
         updated_utc = rows[0]["recorded_at_utc"] if rows else datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-        formatted_rows = [
-            {
-                "date": r.get("recorded_date_utc"),
-                "btc": r.get("margin_balance"),
-                "usd": r.get("usd_estimate"),
-                "source": "Deribit margin_balance @ 00:00 UTC",
-            }
-            for r in rows
-        ]
+        seeded_perf = await asyncio.to_thread(deribit_balance_store.get_performance, currency)
+        computed_perf = await asyncio.to_thread(deribit_balance_store.compute_performance_from_rows, rows)
+        perf = {
+            "label": seeded_perf.get("label") if seeded_perf else computed_perf.get("label"),
+            "as_of": seeded_perf.get("as_of") if seeded_perf else computed_perf.get("as_of"),
+            "twr_net_pct": seeded_perf.get("twr_net_pct") if seeded_perf else computed_perf.get("twr_net_pct"),
+            "twr_net_annualized_pct": seeded_perf.get("twr_net_annualized_pct") if seeded_perf else computed_perf.get("twr_net_annualized_pct"),
+            "irr_money_weighted_pct": seeded_perf.get("irr_money_weighted_pct") if seeded_perf else computed_perf.get("irr_money_weighted_pct"),
+            "note": seeded_perf.get("note") if seeded_perf else computed_perf.get("note"),
+        }
+
+        formatted_rows = []
+        for r in rows:
+            source = "Deribit margin_balance @ 00:00 UTC"
+            try:
+                raw = json.loads(r.get("raw_json") or "{}")
+                if isinstance(raw, dict) and raw.get("source"):
+                    source = str(raw.get("source"))
+            except Exception:
+                pass
+
+            formatted_rows.append(
+                {
+                    "date": r.get("recorded_date_utc"),
+                    "btc": r.get("margin_balance"),
+                    "usd": r.get("usd_estimate"),
+                    "source": source,
+                }
+            )
 
         return {
             "fund": "CMFDH II",
             "updated_utc": updated_utc,
-            "performance": {
-                "label": "Net return since inception (Jan 2023)",
-                "as_of": None,
-                "twr_net_pct": None,
-                "twr_net_annualized_pct": None,
-                "irr_money_weighted_pct": None,
-                "note": "Performance metrics are not calculated by this endpoint; it only serves recorded daily balances.",
-            },
+            "performance": perf,
             "rows": formatted_rows,
         }
     except ValueError as e:
