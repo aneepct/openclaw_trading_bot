@@ -4,6 +4,7 @@ Credentials are read from config (env vars POLYMARKET_PRIVATE_KEY, POLYMARKET_FU
 """
 import json
 import httpx
+import logging
 from functools import lru_cache
 
 from py_clob_client_v2 import ClobClient, BalanceAllowanceParams, AssetType
@@ -11,6 +12,10 @@ from py_clob_client_v2.clob_types import OrderArgsV2, OrderType
 from py_clob_client_v2.order_utils.model.side import Side
 
 import config as app_config
+
+logger = logging.getLogger(__name__)
+
+HEDGING_NICK_BALANCE_API = "https://hedge-strategy-nick.levenstein.net/api/hedges/polymarket-account-balance/"
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +248,30 @@ def resolve_market_slug(slug: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_balance() -> float:
-    """Return USDC collateral balance (human-readable, e.g. 12.50)."""
+    """Return USDC balance, preferring the polymarket_deribit_hedging_nick API."""
+    try:
+        resp = httpx.get(HEDGING_NICK_BALANCE_API, timeout=12)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        value = data.get("balance_usdc", data.get("balance"))
+        if value is None:
+            raise ValueError("balance_usdc missing in hedging_nick response")
+        return float(value)
+    except Exception as exc:
+        logger.warning("hedging_nick balance source failed (%s): %s", HEDGING_NICK_BALANCE_API, exc)
+
+    # Fallback: direct CLOB read if external source is unavailable.
     client = _get_client()
-    b = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
-    return int(b["balance"]) / 1e6
+    params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+    try:
+        client.update_balance_allowance(params)
+    except Exception:
+        pass
+    b = client.get_balance_allowance(params) or {}
+    for key in ("balance", "available", "allowance"):
+        if key in b and b[key] is not None:
+            try:
+                return int(b[key]) / 1e6
+            except (TypeError, ValueError):
+                continue
+    return 0.0
