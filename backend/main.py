@@ -1167,6 +1167,34 @@ async def get_deribit_daily_balances(currency: str = "BTC", limit: int = 400, fe
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/deribit/account/store-today-balance")
+@app.get("/deribit/account/store-today-balance")
+async def store_deribit_today_balance(currency: str = "BTC"):
+    """
+    Force-store a Deribit balance snapshot now and return today's latest stored row.
+    Useful when you want today's daily balance to appear immediately.
+    """
+    try:
+        stored = await _record_deribit_balance_once(currency)
+        today_utc = datetime.now(timezone.utc).date().isoformat()
+        daily_rows = await asyncio.to_thread(deribit_balance_store.get_daily_balances, currency, 10)
+        today_row = next((r for r in daily_rows if r.get("recorded_date_utc") == today_utc), None)
+        return {
+            "currency": currency.upper(),
+            "stored": True,
+            "today_utc": today_utc,
+            "today_balance": today_row,
+            "latest_balance": stored,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /deribit/account/store-today-balance")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/deribit/positions/{currency}")
 async def list_deribit_positions_by_currency(currency: str, kind: str = "future"):
     """Return Deribit account positions for a single currency (btc, eth, or any)."""
