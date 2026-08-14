@@ -9,7 +9,7 @@ import time
 import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,7 @@ from config import SPEC_CLIENT, SPEC_VERSION, PROJECT_SLUG, PROJECT_DISPLAY_NAME
 from csv_refresh import csv_refresh_loop, email_scheduler_loop, export_all_csvs, make_default_cfg
 from email_sender import collect_csv_paths, send_csv_report
 from clients.deribit import get_positions as _deribit_get_positions, get_all_positions as _deribit_get_all_positions, get_account_summary as _deribit_get_account_summary
+import deribit_balance_store
 
 _PROVIDER_PROMPT_FILES = {
     "openai": Path(__file__).parent / "prompts" / "openai_system_prompt.txt",
@@ -74,9 +75,34 @@ def get_latest_signals():
     return get_csv_pipeline_signals()
 
 
+def _seconds_until_next_midnight_utc(now: datetime | None = None) -> float:
+    now = now or datetime.now(timezone.utc)
+    next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(1.0, (next_midnight - now).total_seconds())
+
+
+async def _record_deribit_balance_once(currency: str = "BTC") -> dict[str, Any]:
+    summary = await _deribit_get_account_summary(currency, True)
+    ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    await asyncio.to_thread(deribit_balance_store.record_balance_snapshot, currency, summary, ts)
+    latest = await asyncio.to_thread(deribit_balance_store.get_latest_balance, currency)
+    return latest or {}
+
+
+async def deribit_balance_scheduler_loop(currency: str = "BTC") -> None:
+    while True:
+        await asyncio.sleep(_seconds_until_next_midnight_utc())
+        try:
+            await _record_deribit_balance_once(currency)
+            logger.info("[deribit_balance_scheduler] saved daily snapshot for %s", currency.upper())
+        except Exception as exc:
+            logger.exception("[deribit_balance_scheduler] failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await asyncio.to_thread(deribit_balance_store.init_balance_db)
     if _trade_store is not None:
         await asyncio.to_thread(_trade_store.init_trade_db)
     cfg = make_default_cfg()
@@ -85,8 +111,9 @@ async def lifespan(app: FastAPI):
     scanner_task     = asyncio.create_task(ticker_loop())
     auto_trade_btc   = asyncio.create_task(auto_trader_loop("BTC"))
     auto_trade_eth   = asyncio.create_task(auto_trader_loop("ETH"))
+    deribit_bal_task = asyncio.create_task(deribit_balance_scheduler_loop("BTC"))
     yield
-    for task in (csv_task, email_task, scanner_task, auto_trade_btc, auto_trade_eth):
+    for task in (csv_task, email_task, scanner_task, auto_trade_btc, auto_trade_eth, deribit_bal_task):
         task.cancel()
         try:
             await task
@@ -1030,6 +1057,92 @@ async def get_deribit_account(currency: str = "BTC", extended: bool = True):
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.exception("Error in /deribit/account")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/deribit/account/latest-balance")
+async def get_deribit_latest_balance(currency: str = "BTC", fetch_if_missing: bool = True):
+    """
+    Return latest persisted Deribit account balance snapshot.
+    If no row exists and fetch_if_missing=true, fetch live, persist, and return it.
+    """
+    try:
+        latest = await asyncio.to_thread(deribit_balance_store.get_latest_balance, currency)
+        if latest:
+            return {
+                "currency": currency.upper(),
+                "source": "db",
+                "account_balance": latest,
+            }
+
+        if not fetch_if_missing:
+            return {
+                "currency": currency.upper(),
+                "source": "db",
+                "account_balance": None,
+                "message": "No stored balance snapshot found yet.",
+            }
+
+        latest = await _record_deribit_balance_once(currency)
+        return {
+            "currency": currency.upper(),
+            "source": "live_then_saved",
+            "account_balance": latest,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /deribit/account/latest-balance")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/deribit/account/daily-balances")
+async def get_deribit_daily_balances(currency: str = "BTC", limit: int = 400, fetch_if_empty: bool = True):
+    """
+    Return daily Deribit balances in an EMBEDDED_BALANCES-like payload:
+    {
+      fund, updated_utc, performance, rows:[{date, btc, usd, source}]
+    }
+    """
+    try:
+        rows = await asyncio.to_thread(deribit_balance_store.get_daily_balances, currency, limit)
+
+        if not rows and fetch_if_empty:
+            await _record_deribit_balance_once(currency)
+            rows = await asyncio.to_thread(deribit_balance_store.get_daily_balances, currency, limit)
+
+        updated_utc = rows[0]["recorded_at_utc"] if rows else datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        formatted_rows = [
+            {
+                "date": r.get("recorded_date_utc"),
+                "btc": r.get("margin_balance"),
+                "usd": r.get("usd_estimate"),
+                "source": "Deribit margin_balance @ 00:00 UTC",
+            }
+            for r in rows
+        ]
+
+        return {
+            "fund": "CMFDH II",
+            "updated_utc": updated_utc,
+            "performance": {
+                "label": "Net return since inception (Jan 2023)",
+                "as_of": None,
+                "twr_net_pct": None,
+                "twr_net_annualized_pct": None,
+                "irr_money_weighted_pct": None,
+                "note": "Performance metrics are not calculated by this endpoint; it only serves recorded daily balances.",
+            },
+            "rows": formatted_rows,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Error in /deribit/account/daily-balances")
         raise HTTPException(status_code=500, detail=str(e))
 
 
