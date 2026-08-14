@@ -60,6 +60,12 @@ def _to_float(v: Any) -> Optional[float]:
 
 
 def _estimate_usd(account: dict[str, Any]) -> Optional[float]:
+    # If Deribit sends a direct USD estimate, trust and store it as-is.
+    for key in ("usd_estimate", "margin_balance_usd", "equity_usd"):
+        direct = _to_float(account.get(key))
+        if direct is not None:
+            return direct
+
     # Prefer margin_balance for dashboard daily balance parity.
     # Fall back to equity when margin_balance is unavailable.
     btc_balance = _to_float(account.get("margin_balance"))
